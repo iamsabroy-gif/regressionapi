@@ -63,7 +63,12 @@ public class ProviderSpecLoader {
     private static final Map<String, CacheEntry> SPEC_CACHE = new ConcurrentHashMap<>();
 
     public static OpenAPI loadOpenAPI(Path path) throws IOException {
-        return load(path).getOpenAPI();
+        LoadedSpec loaded = load(path);
+        if (loaded.getOpenAPI() == null) {
+            String err = loaded.getMessages().isEmpty() ? "Blocked by spec security rules" : String.join("; ", loaded.getMessages());
+            throw new IOException("Failed to load OpenAPI spec: " + err);
+        }
+        return loaded.getOpenAPI();
     }
 
     public static LoadedSpec load(Path path) throws IOException {
@@ -85,6 +90,14 @@ public class ProviderSpecLoader {
         byte[] bytes = Files.readAllBytes(path);
         String sha256 = computeSha256(bytes);
 
+        // Pre-scan with RefGuard to enforce $ref allowlist (D4 / S1)
+        RefGuard.GuardResult guardResult = RefGuard.scan(path);
+        if (!guardResult.isPassed()) {
+            LoadedSpec loaded = new LoadedSpec(null, absKey, sha256, null, guardResult.getMessages());
+            SPEC_CACHE.put(absKey, new CacheEntry(mtime, loaded));
+            return loaded;
+        }
+
         ParseOptions options = new ParseOptions();
         options.setResolve(true);
         options.setResolveFully(true);
@@ -95,6 +108,7 @@ public class ProviderSpecLoader {
 
         OpenAPI openAPI = parseResult.getOpenAPI();
         List<String> messages = parseResult.getMessages() != null ? new ArrayList<>(parseResult.getMessages()) : new ArrayList<>();
+        messages.addAll(guardResult.getMessages());
 
         if (openAPI == null) {
             String err = messages.isEmpty() ? "Unknown parse error" : String.join(", ", messages);
