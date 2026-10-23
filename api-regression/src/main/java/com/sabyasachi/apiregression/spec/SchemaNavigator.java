@@ -1,6 +1,9 @@
 package com.sabyasachi.apiregression.spec;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.sabyasachi.apiregression.payload.OverrideException;
 import com.sabyasachi.apiregression.payload.ParamPath;
+import com.sabyasachi.apiregression.payload.ReasonCode;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.media.ArraySchema;
 import io.swagger.v3.oas.models.media.MediaType;
@@ -11,6 +14,65 @@ import java.util.*;
 
 @SuppressWarnings("rawtypes")
 public class SchemaNavigator {
+
+    public static class SchemaView {
+        private final Schema schema;
+
+        public SchemaView(Schema schema) {
+            this.schema = schema;
+        }
+
+        public Schema getSchema() {
+            return schema;
+        }
+
+        public Set<String> getTypes() {
+            if (schema == null) return Collections.emptySet();
+            if (schema.getTypes() != null && !schema.getTypes().isEmpty()) {
+                return schema.getTypes();
+            }
+            if (schema.getType() != null && !schema.getType().isBlank()) {
+                return Set.of(schema.getType());
+            }
+            return Collections.emptySet();
+        }
+
+        public boolean isNullable() {
+            if (schema == null) return false;
+            if (Boolean.TRUE.equals(schema.getNullable())) return true;
+            return getTypes().contains("null");
+        }
+
+        public boolean isArray() {
+            if (schema instanceof ArraySchema) return true;
+            return getTypes().contains("array");
+        }
+
+        public boolean isObject() {
+            if (schema != null && (schema.getProperties() != null || schema.getAdditionalProperties() != null)) return true;
+            return getTypes().contains("object");
+        }
+
+        public Schema getItems() {
+            if (schema == null) return null;
+            if (schema instanceof ArraySchema) {
+                return ((ArraySchema) schema).getItems();
+            }
+            if (schema.getItems() != null) {
+                return schema.getItems();
+            }
+            if (schema.getPrefixItems() != null && !schema.getPrefixItems().isEmpty()) {
+                Object pi = schema.getPrefixItems().get(0);
+                if (pi instanceof Schema) return (Schema) pi;
+            }
+            return null;
+        }
+
+        public Object getAdditionalProperties() {
+            if (schema == null) return null;
+            return schema.getAdditionalProperties();
+        }
+    }
 
     public static class ResolvedField {
         private final String jsonPointer;
@@ -55,25 +117,31 @@ public class SchemaNavigator {
         private final String specPointer;
         private final List<String> candidates;
         private final boolean additionalPropertiesAllowed;
+        private final Schema additionalPropertiesSchema;
 
-        public Resolution(Status status, Schema schema, String specPointer, List<String> candidates, boolean additionalPropertiesAllowed) {
+        public Resolution(Status status, Schema schema, String specPointer, List<String> candidates, boolean additionalPropertiesAllowed, Schema additionalPropertiesSchema) {
             this.status = status;
             this.schema = schema;
             this.specPointer = specPointer;
             this.candidates = candidates != null ? candidates : Collections.emptyList();
             this.additionalPropertiesAllowed = additionalPropertiesAllowed;
+            this.additionalPropertiesSchema = additionalPropertiesSchema;
         }
 
         public static Resolution noSchema() {
-            return new Resolution(Status.NO_SCHEMA, null, null, Collections.emptyList(), false);
+            return new Resolution(Status.NO_SCHEMA, null, null, Collections.emptyList(), false, null);
         }
 
         public static Resolution declaredInSpec(Schema schema, String specPointer) {
-            return new Resolution(Status.DECLARED_IN_SPEC, schema, specPointer, Collections.emptyList(), false);
+            return new Resolution(Status.DECLARED_IN_SPEC, schema, specPointer, Collections.emptyList(), false, null);
+        }
+
+        public static Resolution undeclared(List<String> candidates, boolean additionalPropertiesAllowed, Schema additionalPropertiesSchema) {
+            return new Resolution(Status.UNDECLARED, null, null, candidates, additionalPropertiesAllowed, additionalPropertiesSchema);
         }
 
         public static Resolution undeclared(List<String> candidates, boolean additionalPropertiesAllowed) {
-            return new Resolution(Status.UNDECLARED, null, null, candidates, additionalPropertiesAllowed);
+            return new Resolution(Status.UNDECLARED, null, null, candidates, additionalPropertiesAllowed, null);
         }
 
         public Status getStatus() {
@@ -95,12 +163,23 @@ public class SchemaNavigator {
         public boolean isAdditionalPropertiesAllowed() {
             return additionalPropertiesAllowed;
         }
+
+        public Schema getAdditionalPropertiesSchema() {
+            return additionalPropertiesSchema;
+        }
     }
 
     private final OpenAPI openAPI;
 
     public SchemaNavigator(OpenAPI openAPI) {
         this.openAPI = openAPI;
+        if (openAPI != null && openAPI.getComponents() != null && openAPI.getComponents().getSchemas() != null) {
+            for (Map.Entry<String, Schema> entry : openAPI.getComponents().getSchemas().entrySet()) {
+                if (entry.getValue() != null && entry.getValue().getName() == null) {
+                    entry.getValue().setName(entry.getKey());
+                }
+            }
+        }
     }
 
     public Schema extractJsonRequestBodySchema(RequestBody requestBody) {
@@ -127,24 +206,37 @@ public class SchemaNavigator {
     }
 
     public Schema resolveRef(String ref) {
-        if (ref == null || openAPI == null || openAPI.getComponents() == null) {
+        if (ref == null || openAPI == null) {
             return null;
         }
         String prefix = "#/components/schemas/";
         if (ref.startsWith(prefix)) {
             String name = ref.substring(prefix.length());
-            Map<String, Schema> schemas = openAPI.getComponents().getSchemas();
-            if (schemas != null && schemas.containsKey(name)) {
-                return schemas.get(name);
+            if (openAPI.getComponents() != null && openAPI.getComponents().getSchemas() != null) {
+                Schema s = openAPI.getComponents().getSchemas().get(name);
+                if (s != null && s.getName() == null) {
+                    s.setName(name);
+                }
+                return s;
             }
         }
-        // Swagger 2.0 ref style: #/definitions/
         String defPrefix = "#/definitions/";
         if (ref.startsWith(defPrefix)) {
             String name = ref.substring(defPrefix.length());
-            Map<String, Schema> schemas = openAPI.getComponents().getSchemas();
-            if (schemas != null && schemas.containsKey(name)) {
-                return schemas.get(name);
+            if (openAPI.getComponents() != null && openAPI.getComponents().getSchemas() != null) {
+                return openAPI.getComponents().getSchemas().get(name);
+            }
+        }
+        if (ref.startsWith("#/$defs/")) {
+            String name = ref.substring("#/$defs/".length());
+            if (openAPI.getComponents() != null && openAPI.getComponents().getSchemas() != null) {
+                return openAPI.getComponents().getSchemas().get(name);
+            }
+        }
+        if (ref.startsWith("#/components/$defs/")) {
+            String name = ref.substring("#/components/$defs/".length());
+            if (openAPI.getComponents() != null && openAPI.getComponents().getSchemas() != null) {
+                return openAPI.getComponents().getSchemas().get(name);
             }
         }
         return null;
@@ -184,6 +276,24 @@ public class SchemaNavigator {
                 }
             }
 
+            // Check oneOf
+            if (resolved.getOneOf() != null && !resolved.getOneOf().isEmpty()) {
+                for (Object sub : resolved.getOneOf()) {
+                    if (sub instanceof Schema) {
+                        walkSchema((Schema) sub, currentPath, currentSpecPointer + "/oneOf", targetLeaf, depth + 1, inArray, visited, results);
+                    }
+                }
+            }
+
+            // Check anyOf
+            if (resolved.getAnyOf() != null && !resolved.getAnyOf().isEmpty()) {
+                for (Object sub : resolved.getAnyOf()) {
+                    if (sub instanceof Schema) {
+                        walkSchema((Schema) sub, currentPath, currentSpecPointer + "/anyOf", targetLeaf, depth + 1, inArray, visited, results);
+                    }
+                }
+            }
+
             // Check properties
             Map<String, Schema> props = resolved.getProperties();
             if (props != null) {
@@ -202,9 +312,9 @@ public class SchemaNavigator {
             }
 
             // Check array items
-            if (resolved instanceof ArraySchema) {
-                ArraySchema arrSchema = (ArraySchema) resolved;
-                Schema items = arrSchema.getItems();
+            SchemaView sView = new SchemaView(resolved);
+            if (sView.isArray()) {
+                Schema items = sView.getItems();
                 if (items != null) {
                     walkSchema(items, currentPath + "[*]", currentSpecPointer + "/items", targetLeaf, depth + 1, true, visited, results);
                 }
@@ -215,6 +325,10 @@ public class SchemaNavigator {
     }
 
     public Resolution resolveExplicitPath(Schema rootSchema, ParamPath path) {
+        return resolveExplicitPath(rootSchema, path, null);
+    }
+
+    public Resolution resolveExplicitPath(Schema rootSchema, ParamPath path, JsonNode currentPayload) {
         if (rootSchema == null) {
             return Resolution.noSchema();
         }
@@ -233,23 +347,45 @@ public class SchemaNavigator {
             }
 
             if (seg.isArray()) {
-                if (current instanceof ArraySchema) {
-                    current = resolveSchema(((ArraySchema) current).getItems());
+                SchemaView currentView = new SchemaView(current);
+                if (currentView.isArray()) {
+                    current = resolveSchema(currentView.getItems());
                     specPointer.append("/items");
                 } else {
                     return Resolution.undeclared(Collections.emptyList(), false);
                 }
             } else {
-                Map<String, Schema> props = getAllProperties(current);
                 String propName = seg.getPropertyName();
+                // Check if current has polymorphic branches (oneOf or anyOf)
+                if (current.getOneOf() != null || current.getAnyOf() != null) {
+                    Schema polyBranch = resolvePolymorphicProperty(current, propName, currentPayload);
+                    if (polyBranch != null) {
+                        Map<String, Schema> bProps = getAllProperties(polyBranch);
+                        if (bProps.containsKey(propName)) {
+                            current = resolveSchema(bProps.get(propName));
+                            specPointer.append("/").append(polyBranch.getName() != null ? polyBranch.getName() : "branch").append("/properties/").append(propName);
+                            continue;
+                        }
+                    }
+                }
+
+                Map<String, Schema> props = getAllProperties(current);
                 if (props.containsKey(propName)) {
                     current = resolveSchema(props.get(propName));
                     specPointer.append("/properties/").append(propName);
                 } else {
                     // Check did-you-mean suggestions from sibling properties
                     List<String> didYouMean = findDidYouMean(propName, props.keySet());
-                    boolean additionalProps = hasAdditionalProperties(current);
-                    return Resolution.undeclared(didYouMean, additionalProps);
+                    Object addProps = current.getAdditionalProperties();
+                    boolean additionalProps = false;
+                    Schema addPropsSchema = null;
+                    if (addProps instanceof Boolean) {
+                        additionalProps = (Boolean) addProps;
+                    } else if (addProps instanceof Schema) {
+                        additionalProps = true;
+                        addPropsSchema = (Schema) addProps;
+                    }
+                    return Resolution.undeclared(didYouMean, additionalProps, addPropsSchema);
                 }
             }
         }
@@ -257,8 +393,89 @@ public class SchemaNavigator {
         return Resolution.declaredInSpec(current, specPointer.toString());
     }
 
+    public Schema resolvePolymorphicProperty(Schema schema, String propertyName, JsonNode currentPayload) {
+        if (schema == null) return null;
+        Schema resolved = resolveSchema(schema);
+        if (resolved == null) return null;
+
+        List subSchemas = null;
+        if (resolved.getOneOf() != null && !resolved.getOneOf().isEmpty()) {
+            subSchemas = resolved.getOneOf();
+        } else if (resolved.getAnyOf() != null && !resolved.getAnyOf().isEmpty()) {
+            subSchemas = resolved.getAnyOf();
+        }
+
+        if (subSchemas == null || subSchemas.isEmpty()) {
+            return null;
+        }
+
+        // 1. Check discriminator
+        if (resolved.getDiscriminator() != null) {
+            String prop = resolved.getDiscriminator().getPropertyName();
+            if (prop != null && currentPayload != null && currentPayload.has(prop)) {
+                String discValue = currentPayload.get(prop).asText();
+                Map<String, String> mapping = resolved.getDiscriminator().getMapping();
+                String targetRef = mapping != null ? mapping.get(discValue) : null;
+                if (targetRef != null) {
+                    Schema branch = resolveRef(targetRef);
+                    if (branch != null) return branch;
+                }
+                for (Object o : subSchemas) {
+                    if (o instanceof Schema s) {
+                        Schema resolvedS = resolveSchema(s);
+                        if (discValue.equalsIgnoreCase(s.getName()) || (resolvedS != null && discValue.equalsIgnoreCase(resolvedS.getName()))) {
+                            return resolvedS;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check property membership across branches
+        List<Schema> branchesWithProp = new ArrayList<>();
+        for (Object o : subSchemas) {
+            if (o instanceof Schema s) {
+                Schema branch = resolveSchema(s);
+                if (branch != null && getAllProperties(branch).containsKey(propertyName)) {
+                    branchesWithProp.add(branch);
+                }
+            }
+        }
+
+        if (branchesWithProp.size() == 1) {
+            return branchesWithProp.get(0);
+        }
+        if (branchesWithProp.size() > 1) {
+            // Check if same type across all matching branches
+            String firstType = new SchemaView(getAllProperties(branchesWithProp.get(0)).get(propertyName)).getTypes().toString();
+            boolean sameType = true;
+            for (Schema b : branchesWithProp) {
+                String bType = new SchemaView(getAllProperties(b).get(propertyName)).getTypes().toString();
+                if (!Objects.equals(firstType, bType)) {
+                    sameType = false;
+                    break;
+                }
+            }
+            if (sameType) {
+                return branchesWithProp.get(0);
+            }
+            List<String> branchNames = new ArrayList<>();
+            for (Schema b : branchesWithProp) {
+                branchNames.add(b.getName() != null ? b.getName() : b.getTitle() != null ? b.getTitle() : "branch");
+            }
+            throw new OverrideException(ReasonCode.AMBIGUOUS_POLYMORPHIC,
+                    "Property '" + propertyName + "' exists in multiple polymorphic branches with differing types", branchNames);
+        }
+
+        return null;
+    }
+
     public Schema navigateExplicitPath(Schema rootSchema, ParamPath path) {
-        Resolution res = resolveExplicitPath(rootSchema, path);
+        return navigateExplicitPath(rootSchema, path, null);
+    }
+
+    public Schema navigateExplicitPath(Schema rootSchema, ParamPath path, JsonNode currentPayload) {
+        Resolution res = resolveExplicitPath(rootSchema, path, currentPayload);
         return (res.getStatus() == Resolution.Status.DECLARED_IN_SPEC) ? res.getSchema() : null;
     }
 
@@ -310,6 +527,22 @@ public class SchemaNavigator {
 
         if (resolved.getAllOf() != null) {
             for (Object sub : resolved.getAllOf()) {
+                if (sub instanceof Schema) {
+                    all.putAll(getAllProperties((Schema) sub));
+                }
+            }
+        }
+
+        if (resolved.getOneOf() != null) {
+            for (Object sub : resolved.getOneOf()) {
+                if (sub instanceof Schema) {
+                    all.putAll(getAllProperties((Schema) sub));
+                }
+            }
+        }
+
+        if (resolved.getAnyOf() != null) {
+            for (Object sub : resolved.getAnyOf()) {
                 if (sub instanceof Schema) {
                     all.putAll(getAllProperties((Schema) sub));
                 }

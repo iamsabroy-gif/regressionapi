@@ -54,6 +54,13 @@ public class TypeCoercer {
             return new CoercionResult(NullNode.getInstance(), warningCollector);
         }
 
+        // M4: TYPE_CHANGED warning if explicitType differs from specType
+        if (explicitType != null && !explicitType.isBlank() && specType != null && !specType.isBlank()) {
+            if (!explicitType.trim().equalsIgnoreCase(specType.trim())) {
+                warningCollector.add("TYPE_CHANGED: Explicit type '" + explicitType + "' differs from spec type '" + specType + "'.");
+            }
+        }
+
         // Determine target type (Precedence: explicitType > specType > existingNode type)
         String targetType = determineTargetType(explicitType, specType, existingNode, cellKind);
 
@@ -65,6 +72,45 @@ public class TypeCoercer {
                 return new CoercionResult(TextNode.valueOf(sentinel), warningCollector);
             }
             return new CoercionResult(TextNode.valueOf(rawValue), warningCollector);
+        }
+
+        // Handle DATE cell kind and date/date-time spec formats
+        boolean isDateCell = "DATE".equalsIgnoreCase(cellKind);
+        boolean isDateFormat = "date".equalsIgnoreCase(specFormat) || "date".equalsIgnoreCase(explicitType) || "date".equalsIgnoreCase(targetType);
+        boolean isDateTimeFormat = "date-time".equalsIgnoreCase(specFormat) || "date-time".equalsIgnoreCase(explicitType) || "date-time".equalsIgnoreCase(targetType);
+
+        if (isDateCell || isDateFormat || isDateTimeFormat) {
+            String cleanDate = rawValue.trim();
+            if (isDateFormat) {
+                // Truncate to yyyy-MM-dd
+                if (cleanDate.length() >= 10) {
+                    cleanDate = cleanDate.substring(0, 10);
+                }
+                try {
+                    LocalDate.parse(cleanDate, DateTimeFormatter.ISO_LOCAL_DATE);
+                    return new CoercionResult(TextNode.valueOf(cleanDate), warningCollector);
+                } catch (DateTimeParseException e) {
+                    throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT,
+                            "Invalid date format, expected yyyy-MM-dd: '" + rawValue + "'");
+                }
+            } else {
+                // date-time: format as yyyy-MM-dd'T'HH:mm:ss (no zone)
+                if (cleanDate.length() == 10) {
+                    cleanDate = cleanDate + "T00:00:00";
+                } else if (cleanDate.length() > 19) {
+                    // strip trailing milliseconds or zone if present
+                    if (cleanDate.contains("T")) {
+                        cleanDate = cleanDate.substring(0, 19);
+                    }
+                }
+                try {
+                    java.time.LocalDateTime.parse(cleanDate);
+                    return new CoercionResult(TextNode.valueOf(cleanDate), warningCollector);
+                } catch (DateTimeParseException e) {
+                    throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT,
+                            "Invalid date-time format, expected ISO-8601 yyyy-MM-dd'T'HH:mm:ss: '" + rawValue + "'");
+                }
+            }
         }
 
         try {
@@ -123,38 +169,14 @@ public class TypeCoercer {
                     }
 
                 case "string":
-                case "date":
-                case "date-time":
                 default:
-                    // Validate date / date-time formats if requested
-                    if ("date".equalsIgnoreCase(specFormat) || "date".equalsIgnoreCase(targetType)) {
+                    // If spec type is object/array, trigger JSON parse
+                    if ("object".equalsIgnoreCase(specType) || "array".equalsIgnoreCase(specType)) {
                         try {
-                            LocalDate.parse(rawValue.trim(), DateTimeFormatter.ISO_LOCAL_DATE);
-                        } catch (DateTimeParseException e) {
-                            throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT,
-                                    "Invalid date format, expected yyyy-MM-dd: '" + rawValue + "'");
-                        }
-                    } else if ("date-time".equalsIgnoreCase(specFormat) || "date-time".equalsIgnoreCase(targetType)) {
-                        boolean valid = false;
-                        try {
-                            java.time.OffsetDateTime.parse(rawValue.trim());
-                            valid = true;
-                        } catch (DateTimeParseException ignored) {}
-                        if (!valid) {
-                            try {
-                                java.time.LocalDateTime.parse(rawValue.trim());
-                                valid = true;
-                            } catch (DateTimeParseException ignored) {}
-                        }
-                        if (!valid) {
-                            try {
-                                java.time.Instant.parse(rawValue.trim());
-                                valid = true;
-                            } catch (DateTimeParseException ignored) {}
-                        }
-                        if (!valid) {
-                            throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT,
-                                    "Invalid date-time format, expected ISO-8601: '" + rawValue + "'");
+                            return new CoercionResult(mapper.readTree(rawValue), warningCollector);
+                        } catch (JsonProcessingException e) {
+                            throw new OverrideException(ReasonCode.INVALID_JSON,
+                                    "Failed to parse JSON for spec type '" + specType + "': " + e.getOriginalMessage(), e);
                         }
                     }
 

@@ -276,7 +276,7 @@ public class ParameterOverrideService {
                     }
 
                     ParamPath paramPath = ParamPath.parse(paramStr);
-                    ParamLocation targetLocation = determineLocation(explicitLoc, paramPath, opMatch);
+                    ParamLocation targetLocation = determineLocation(explicitLoc, paramPath, opMatch, requestBodySchema, schemaNavigator, workingBodyNode, workingUrl, workingHeaders, specIndex != null);
                     entry.setLocation(targetLocation);
 
                     if (targetLocation == ParamLocation.BODY) {
@@ -306,7 +306,7 @@ public class ParameterOverrideService {
 
                         // Apply on row-scoped deep copy (D1 / H6)
                         JsonNode rowWorkingCopy = workingBodyNode.deepCopy();
-                        processBodyOverride(row, paramPath, rowWorkingCopy, requestBodySchema, schemaNavigator, coercer, options, entry, summary);
+                        processBodyOverride(row, paramPath, rowWorkingCopy, workingBodyNode, requestBodySchema, schemaNavigator, coercer, options, entry, summary, specIndex != null, opMatch != null, sheet.getRows());
 
                         // If successful, promote row working copy
                         workingBodyNode = rowWorkingCopy;
@@ -493,10 +493,11 @@ public class ParameterOverrideService {
         }
     }
 
-    private void processBodyOverride(ParamRow row, ParamPath paramPath, JsonNode rootNode,
+    private void processBodyOverride(ParamRow row, ParamPath paramPath, JsonNode rootNode, JsonNode initialBodyNode,
                                      Schema requestBodySchema, SchemaNavigator schemaNavigator,
                                      TypeCoercer coercer, OverrideOptions options,
-                                     OverrideEntry entry, SheetSummary summary) {
+                                     OverrideEntry entry, SheetSummary summary,
+                                     boolean specAttached, boolean opMatched, List<ParamRow> allSheetRows) {
         ParamPath effectivePath = paramPath;
         Schema targetPropSchema = null;
         String specPointer = null;
@@ -512,6 +513,10 @@ public class ParameterOverrideService {
             } else {
                 // Not in payload -> look up in spec!
                 if (schemaNavigator == null || requestBodySchema == null) {
+                    if (specAttached && !opMatched) {
+                        throw new OverrideException(ReasonCode.OPERATION_NOT_FOUND,
+                                "No matching operation found in spec for gap-fill of bare parameter '" + paramPath.getLeafName() + "'.");
+                    }
                     throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
                             "Field '" + paramPath.getLeafName() + "' is not present in payload and provider spec was not available for gap-fill.");
                 }
@@ -528,12 +533,26 @@ public class ParameterOverrideService {
                 } else {
                     SchemaNavigator.ResolvedField rf = specCandidates.get(0);
                     if (rf.isPassesThroughArray()) {
-                        throw new OverrideException(ReasonCode.NEEDS_INDEX,
-                                "Field '" + paramPath.getLeafName() + "' is inside an array in spec schema. Please specify an array index, e.g. " + rf.getJsonPointer().replace("[*]", "[0]"));
+                        String arrayPtr = rf.getJsonPointer();
+                        int arrIdx = arrayPtr.indexOf("[*]");
+                        String arrayPathStr = (arrIdx != -1) ? arrayPtr.substring(0, arrIdx) : arrayPtr;
+                        JsonNode existingArr = PayloadOverrider.findExistingNode(rootNode, ParamPath.parse(arrayPathStr));
+                        if (existingArr != null && existingArr.isArray()) {
+                            String suggested = rf.getJsonPointer().replace("[*]", "[0]");
+                            throw new OverrideException(ReasonCode.NEEDS_INDEX,
+                                    "Field '" + paramPath.getLeafName() + "' is inside an array in spec schema and array is present in payload. Specify an array index, e.g. " + suggested,
+                                    List.of(suggested));
+                        } else {
+                            // Array is absent -> create element [0]
+                            effectivePath = ParamPath.parse(rf.getJsonPointer().replace("[*]", "[0]"));
+                            targetPropSchema = rf.getSchema();
+                            specPointer = rf.getSpecPointer().replace("[*]", "/0");
+                        }
+                    } else {
+                        effectivePath = ParamPath.parse(rf.getJsonPointer());
+                        targetPropSchema = rf.getSchema();
+                        specPointer = rf.getSpecPointer();
                     }
-                    effectivePath = ParamPath.parse(rf.getJsonPointer());
-                    targetPropSchema = rf.getSchema();
-                    specPointer = rf.getSpecPointer();
                 }
             }
         }
@@ -548,18 +567,29 @@ public class ParameterOverrideService {
         // 3. H1 Resolution Policy: If explicit path and not in payload
         if (existingNode == null) {
             if (schemaNavigator == null || requestBodySchema == null) {
+                if (specAttached && !opMatched) {
+                    throw new OverrideException(ReasonCode.OPERATION_NOT_FOUND,
+                            "No matching operation found in spec for gap-fill of field '" + effectivePath + "'.");
+                }
                 throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
                         "Field '" + effectivePath + "' is not in payload and provider spec is unavailable for gap-fill.");
             }
 
-            SchemaNavigator.Resolution resolution = schemaNavigator.resolveExplicitPath(requestBodySchema, effectivePath);
+            SchemaNavigator.Resolution resolution = schemaNavigator.resolveExplicitPath(requestBodySchema, effectivePath, rootNode);
             if (resolution.getStatus() == SchemaNavigator.Resolution.Status.NO_SCHEMA) {
+                if (specAttached && !opMatched) {
+                    throw new OverrideException(ReasonCode.OPERATION_NOT_FOUND,
+                            "Operation not found in spec for field '" + effectivePath + "'.");
+                }
                 throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
                         "Field '" + effectivePath + "' is not in payload and provider spec is unavailable.");
             } else if (resolution.getStatus() == SchemaNavigator.Resolution.Status.UNDECLARED) {
                 if (resolution.isAdditionalPropertiesAllowed()) {
                     entry.addWarning("Field '" + effectivePath + "' is undeclared in spec, but permitted by additionalProperties.");
                     entry.setReasonCode(ReasonCode.UNDECLARED);
+                    if (resolution.getAdditionalPropertiesSchema() != null) {
+                        targetPropSchema = resolution.getAdditionalPropertiesSchema();
+                    }
                 } else {
                     throw new OverrideException(ReasonCode.NOT_IN_SPEC,
                             "Field '" + effectivePath + "' is neither in payload nor declared in spec.", resolution.getCandidates());
@@ -571,7 +601,21 @@ public class ParameterOverrideService {
             }
         } else {
             if (targetPropSchema == null && schemaNavigator != null && requestBodySchema != null) {
-                targetPropSchema = schemaNavigator.navigateExplicitPath(requestBodySchema, effectivePath);
+                targetPropSchema = schemaNavigator.navigateExplicitPath(requestBodySchema, effectivePath, rootNode);
+            }
+        }
+
+        // ReadOnly check
+        if (targetPropSchema != null && Boolean.TRUE.equals(targetPropSchema.getReadOnly())) {
+            if (existingNode == null) {
+                throw new OverrideException(ReasonCode.READONLY_ADD,
+                        "Field '" + effectivePath + "' is marked readOnly in spec and cannot be added.");
+            } else if (options.getConstraintPolicy() == ConstraintPolicy.STRICT) {
+                throw new OverrideException(ReasonCode.READONLY_MODIFY,
+                        "Field '" + effectivePath + "' is marked readOnly in spec.");
+            } else {
+                entry.addWarning("READONLY_MODIFY: Field '" + effectivePath + "' is marked readOnly in spec.");
+                summary.setWarnings(summary.getWarnings() + 1);
             }
         }
 
@@ -618,9 +662,56 @@ public class ParameterOverrideService {
         } else {
             summary.setModified(summary.getModified() + 1);
         }
+
+        // 7. Check REQUIRED_SIBLINGS_MISSING for newly created intermediate objects
+        List<ParamPath.Segment> segs = effectivePath.getSegments();
+        if (existingNode == null && segs.size() > 1 && schemaNavigator != null && requestBodySchema != null) {
+            StringBuilder prefix = new StringBuilder();
+            for (int i = 0; i < segs.size() - 1; i++) {
+                ParamPath.Segment seg = segs.get(i);
+                if (seg.isArray()) {
+                    prefix.append("[").append(seg.getArrayIndex()).append("]");
+                } else {
+                    if (prefix.length() > 0) prefix.append(".");
+                    prefix.append(seg.getPropertyName());
+                }
+                ParamPath intermediatePath = ParamPath.parse(prefix.toString());
+                if (PayloadOverrider.findExistingNode(initialBodyNode, intermediatePath) == null) {
+                    Schema intermediateSchema = schemaNavigator.navigateExplicitPath(requestBodySchema, intermediatePath, rootNode);
+                    if (intermediateSchema != null && intermediateSchema.getRequired() != null && !intermediateSchema.getRequired().isEmpty()) {
+                        List<String> requiredList = intermediateSchema.getRequired();
+                        List<String> missing = new ArrayList<>();
+                        for (String req : requiredList) {
+                            String childPath = prefix + "." + req;
+                            boolean inBody = PayloadOverrider.findExistingNode(rootNode, ParamPath.parse(childPath)) != null;
+                            boolean inSheet = false;
+                            if (allSheetRows != null) {
+                                for (ParamRow r : allSheetRows) {
+                                    if (r.getParameter() != null && r.getParameter().trim().endsWith(req)) {
+                                        inSheet = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!inBody && !inSheet) {
+                                missing.add(req);
+                            }
+                        }
+                        if (!missing.isEmpty()) {
+                            entry.addWarning("REQUIRED_SIBLINGS_MISSING: Intermediate object '" + prefix + "' has required properties not set by any row on this sheet: " + missing);
+                            summary.setWarnings(summary.getWarnings() + 1);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    private ParamLocation determineLocation(String explicitLocation, ParamPath paramPath, SpecIndex.OperationMatch opMatch) {
+    private ParamLocation determineLocation(String explicitLocation, ParamPath paramPath,
+                                            SpecIndex.OperationMatch opMatch,
+                                            Schema requestBodySchema, SchemaNavigator schemaNavigator,
+                                            JsonNode workingBodyNode, String workingUrl, Map<String, String> workingHeaders,
+                                            boolean specAttached) {
         if (explicitLocation != null && !explicitLocation.isBlank()) {
             switch (explicitLocation.trim().toLowerCase()) {
                 case "query": return ParamLocation.QUERY;
@@ -635,18 +726,76 @@ public class ParameterOverrideService {
             return ParamLocation.BODY;
         }
 
-        // Check if bare name matches query/header/path in operation
+        String leaf = paramPath.getLeafName();
+
         if (opMatch != null) {
-            Parameter p = opMatch.findParameter(paramPath.getLeafName(), null);
-            if (p != null && p.getIn() != null) {
-                switch (p.getIn().toLowerCase()) {
+            Parameter opParam = opMatch.findParameter(leaf, null);
+
+            boolean inBodySchema = false;
+            if (schemaNavigator != null && requestBodySchema != null) {
+                List<SchemaNavigator.ResolvedField> fields = schemaNavigator.findSchemaPathsForLeaf(requestBodySchema, leaf);
+                if (!fields.isEmpty()) inBodySchema = true;
+            }
+
+            if (opParam != null && inBodySchema) {
+                throw new OverrideException(ReasonCode.AMBIGUOUS_LOCATION,
+                        "Bare parameter '" + leaf + "' is ambiguous: matches both operation parameter (" + opParam.getIn() + ") and body schema.",
+                        List.of(opParam.getIn() + "." + leaf, "body." + leaf));
+            }
+
+            if (opParam != null && opParam.getIn() != null) {
+                switch (opParam.getIn().toLowerCase()) {
                     case "query": return ParamLocation.QUERY;
                     case "path": return ParamLocation.PATH;
                     case "header": return ParamLocation.HEADER;
                 }
             }
+
+            if (inBodySchema) {
+                return ParamLocation.BODY;
+            }
         }
 
-        return ParamLocation.BODY;
+        // Check if bare name matches query, header, or body in current request
+        boolean inPayload = workingBodyNode != null && !PayloadOverrider.findCandidatePathsForLeaf(workingBodyNode, leaf).isEmpty();
+        boolean inQuery = workingUrl != null && (workingUrl.contains("?" + leaf + "=") || workingUrl.contains("&" + leaf + "=") || workingUrl.endsWith("?" + leaf) || workingUrl.contains("&" + leaf + "&"));
+        boolean inHeader = false;
+        if (workingHeaders != null) {
+            for (String h : workingHeaders.keySet()) {
+                if (h.equalsIgnoreCase(leaf)) {
+                    inHeader = true;
+                    break;
+                }
+            }
+        }
+
+        int matches = (inPayload ? 1 : 0) + (inQuery ? 1 : 0) + (inHeader ? 1 : 0);
+        if (matches > 1) {
+            List<String> candidates = new ArrayList<>();
+            if (inQuery) candidates.add("query." + leaf);
+            if (inHeader) candidates.add("header." + leaf);
+            if (inPayload) candidates.add("body." + leaf);
+            throw new OverrideException(ReasonCode.AMBIGUOUS_LOCATION,
+                    "Bare parameter '" + leaf + "' exists in multiple parts of the request", candidates);
+        }
+
+        if (inQuery) return ParamLocation.QUERY;
+        if (inHeader) return ParamLocation.HEADER;
+        if (inPayload) return ParamLocation.BODY;
+
+        // Zero hits:
+        if (opMatch != null) {
+            // Spec operation matched, but param is neither in spec nor request:
+            // Route to BODY so processBodyOverride emits NOT_IN_SPEC with candidates
+            return ParamLocation.BODY;
+        }
+
+        if (specAttached) {
+            throw new OverrideException(ReasonCode.OPERATION_NOT_FOUND,
+                    "No matching operation found in spec for gap-fill of bare parameter '" + leaf + "'.");
+        } else {
+            throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                    "Bare parameter '" + leaf + "' was not found in request and no OpenAPI spec is available.");
+        }
     }
 }
