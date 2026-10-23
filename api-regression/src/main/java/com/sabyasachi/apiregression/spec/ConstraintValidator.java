@@ -2,11 +2,13 @@ package com.sabyasachi.apiregression.spec;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.sabyasachi.apiregression.payload.ConstraintPolicy;
+import com.sabyasachi.apiregression.util.SafeRegex;
 import io.swagger.v3.oas.models.media.Schema;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.regex.Pattern;
+import java.util.Objects;
+import java.util.UUID;
 
 @SuppressWarnings("rawtypes")
 public class ConstraintValidator {
@@ -71,29 +73,56 @@ public class ConstraintValidator {
             }
         }
 
-        // 2. Nullable check
+        // 2. Nullable check (OAS 3.0: nullable: true; OAS 3.1: "null" in types array; default: false)
         if (valueNode.isNull()) {
-            Boolean nullable = schema.getNullable();
-            if (Boolean.FALSE.equals(nullable)) {
+            boolean nullable = Boolean.TRUE.equals(schema.getNullable())
+                    || (schema.getTypes() != null && schema.getTypes().contains("null"));
+            if (!nullable) {
                 String msg = "CONSTRAINT_VIOLATION: Setting null on a non-nullable field.";
                 return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
             }
             return ValidationResult.ok();
         }
 
-        // 3. Enum check
+        // 3. Enum check - exact, case-sensitive, typed comparison
         List enums = schema.getEnum();
         if (enums != null && !enums.isEmpty()) {
             boolean matched = false;
-            String textVal = valueNode.asText();
             for (Object e : enums) {
-                if (String.valueOf(e).equalsIgnoreCase(textVal)) {
-                    matched = true;
-                    break;
+                if (e == null) {
+                    if (valueNode.isNull()) {
+                        matched = true;
+                        break;
+                    }
+                } else if (valueNode.isNumber() && e instanceof Number) {
+                    try {
+                        BigDecimal nodeNum = new BigDecimal(valueNode.asText());
+                        BigDecimal enumNum = new BigDecimal(e.toString());
+                        if (nodeNum.compareTo(enumNum) == 0) {
+                            matched = true;
+                            break;
+                        }
+                    } catch (Exception ignored) {
+                    }
+                } else if (valueNode.isBoolean() && e instanceof Boolean) {
+                    if (valueNode.asBoolean() == (Boolean) e) {
+                        matched = true;
+                        break;
+                    }
+                } else if (valueNode.isTextual()) {
+                    if (e.toString().equals(valueNode.asText())) {
+                        matched = true;
+                        break;
+                    }
+                } else {
+                    if (Objects.equals(e.toString(), valueNode.asText())) {
+                        matched = true;
+                        break;
+                    }
                 }
             }
             if (!matched) {
-                String msg = "CONSTRAINT_VIOLATION: Value '" + textVal + "' is not in allowed enum values: " + enums;
+                String msg = "CONSTRAINT_VIOLATION: Value '" + valueNode.asText() + "' is not in allowed enum values: " + enums;
                 return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
             }
         }
@@ -101,15 +130,16 @@ public class ConstraintValidator {
         // 4. String length & pattern checks
         if (valueNode.isTextual()) {
             String text = valueNode.asText();
+            int codePoints = text.codePointCount(0, text.length());
             Integer minLen = schema.getMinLength();
             Integer maxLen = schema.getMaxLength();
 
-            if (minLen != null && text.length() < minLen) {
-                String msg = "CONSTRAINT_VIOLATION: String length " + text.length() + " < minLength " + minLen;
+            if (minLen != null && codePoints < minLen) {
+                String msg = "CONSTRAINT_VIOLATION: String length " + codePoints + " < minLength " + minLen;
                 return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
             }
-            if (maxLen != null && text.length() > maxLen) {
-                String msg = "CONSTRAINT_VIOLATION: String length " + text.length() + " > maxLength " + maxLen;
+            if (maxLen != null && codePoints > maxLen) {
+                String msg = "CONSTRAINT_VIOLATION: String length " + codePoints + " > maxLength " + maxLen;
                 return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
             }
 
@@ -122,7 +152,7 @@ public class ConstraintValidator {
                 }
                 if ("uuid".equals(f)) {
                     try {
-                        java.util.UUID.fromString(text);
+                        UUID.fromString(text);
                     } catch (Exception ex) {
                         String msg = "CONSTRAINT_VIOLATION: String '" + text + "' is not a valid UUID format.";
                         return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
@@ -132,23 +162,26 @@ public class ConstraintValidator {
                     String msg = "CONSTRAINT_VIOLATION: String '" + text + "' is not a valid date format (expected yyyy-MM-dd).";
                     return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
                 }
+                if ("date-time".equals(f) && !text.matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})?")) {
+                    String msg = "CONSTRAINT_VIOLATION: String '" + text + "' is not a valid date-time format.";
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
             }
 
             String pattern = schema.getPattern();
             if (pattern != null && !pattern.isBlank()) {
-                try {
-                    Pattern p = Pattern.compile(pattern);
-                    if (!p.matcher(text).matches()) {
-                        String msg = "CONSTRAINT_VIOLATION: String '" + text + "' does not match regex pattern: " + pattern;
-                        return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
-                    }
-                } catch (Exception e) {
-                    return ValidationResult.warning("PATTERN_CHECK_SKIPPED: Pattern '" + pattern + "' is not compilable by java.util.regex: " + e.getMessage());
+                SafeRegex.SafeRegexResult sres = SafeRegex.find(pattern, text);
+                if (sres.isSkipped()) {
+                    // SafeRegex skip is a warning under both WARN and STRICT policy
+                    return ValidationResult.warning(sres.getWarning());
+                } else if (!sres.isMatched()) {
+                    String msg = "CONSTRAINT_VIOLATION: String '" + text + "' does not match regex pattern: " + pattern;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
                 }
             }
         }
 
-        // 5. Numeric ranges (minimum/maximum & int32/int64 format)
+        // 5. Numeric ranges (minimum/maximum & exclusiveMinimum/exclusiveMaximum for 3.0 and 3.1)
         if (valueNode.isNumber()) {
             BigDecimal num = new BigDecimal(valueNode.asText());
             BigDecimal min = schema.getMinimum();
@@ -167,13 +200,42 @@ public class ConstraintValidator {
                 }
             }
 
-            if (min != null && num.compareTo(min) < 0) {
-                String msg = "CONSTRAINT_VIOLATION: Number " + num + " < minimum " + min;
-                return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+            // Minimum check (3.0 boolean flag vs 3.1 numeric value)
+            BigDecimal exMinValue = schema.getExclusiveMinimumValue();
+            if (exMinValue != null) {
+                if (num.compareTo(exMinValue) <= 0) {
+                    String msg = "CONSTRAINT_VIOLATION: Number " + num + " <= exclusiveMinimum " + exMinValue;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
+            } else if (Boolean.TRUE.equals(schema.getExclusiveMinimum()) && min != null) {
+                if (num.compareTo(min) <= 0) {
+                    String msg = "CONSTRAINT_VIOLATION: Number " + num + " <= exclusiveMinimum " + min;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
+            } else if (min != null) {
+                if (num.compareTo(min) < 0) {
+                    String msg = "CONSTRAINT_VIOLATION: Number " + num + " < minimum " + min;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
             }
-            if (max != null && num.compareTo(max) > 0) {
-                String msg = "CONSTRAINT_VIOLATION: Number " + num + " > maximum " + max;
-                return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+
+            // Maximum check (3.0 boolean flag vs 3.1 numeric value)
+            BigDecimal exMaxValue = schema.getExclusiveMaximumValue();
+            if (exMaxValue != null) {
+                if (num.compareTo(exMaxValue) >= 0) {
+                    String msg = "CONSTRAINT_VIOLATION: Number " + num + " >= exclusiveMaximum " + exMaxValue;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
+            } else if (Boolean.TRUE.equals(schema.getExclusiveMaximum()) && max != null) {
+                if (num.compareTo(max) >= 0) {
+                    String msg = "CONSTRAINT_VIOLATION: Number " + num + " >= exclusiveMaximum " + max;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
+            } else if (max != null) {
+                if (num.compareTo(max) > 0) {
+                    String msg = "CONSTRAINT_VIOLATION: Number " + num + " > maximum " + max;
+                    return isStrict ? ValidationResult.error(msg) : ValidationResult.warning(msg);
+                }
             }
         }
 

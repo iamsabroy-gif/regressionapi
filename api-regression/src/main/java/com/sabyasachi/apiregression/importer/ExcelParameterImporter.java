@@ -58,11 +58,33 @@ public class ExcelParameterImporter {
         }
     }
 
+    public static final int MAX_SHEETS_PER_WORKBOOK = 200;
+    public static final int MAX_COLS_PER_ROW = 256;
+
+    static {
+        configureZipSecurity();
+    }
+
+    public static void configureZipSecurity() {
+        try {
+            org.apache.poi.openxml4j.util.ZipSecureFile.setMinInflateRatio(0.01);
+            org.apache.poi.openxml4j.util.ZipSecureFile.setMaxEntrySize(100_000_000L);
+            org.apache.poi.openxml4j.util.ZipSecureFile.setMaxTextSize(10_000_000L);
+            org.apache.poi.util.IOUtils.setByteArrayMaxOverride(50_000_000);
+        } catch (Throwable ignored) {
+        }
+    }
+
     public List<SheetParams> parse(InputStream inputStream, boolean skipHiddenSheets, int maxRowsPerSheet) throws IOException {
+        configureZipSecurity();
         List<SheetParams> results = new ArrayList<>();
 
         try (Workbook workbook = new XSSFWorkbook(inputStream)) {
             int sheetCount = workbook.getNumberOfSheets();
+            if (sheetCount > MAX_SHEETS_PER_WORKBOOK) {
+                throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                        "Workbook exceeds maximum allowed sheet count of " + MAX_SHEETS_PER_WORKBOOK + " (found " + sheetCount + ").");
+            }
             for (int i = 0; i < sheetCount; i++) {
                 String sheetName = workbook.getSheetName(i);
                 boolean isHidden = workbook.isSheetHidden(i);
@@ -85,6 +107,12 @@ public class ExcelParameterImporter {
         } catch (OverrideException oe) {
             throw oe;
         } catch (Exception e) {
+            String msg = (e.getMessage() != null ? e.getMessage() : "").toLowerCase();
+            if (msg.contains("zip bomb") || msg.contains("exceed the max. ratio") || msg.contains("inflate")
+                    || msg.contains("too large") || e instanceof org.apache.poi.util.RecordFormatException) {
+                throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                        "workbook rejected: too large when decompressed (potential zip bomb)", e);
+            }
             throw new IOException("Failed to read .xlsx workbook: " + e.getMessage(), e);
         }
 
@@ -368,7 +396,8 @@ public class ExcelParameterImporter {
         short maxCol = row.getLastCellNum();
         if (minCol < 0 || maxCol < 0) return -1;
 
-        for (int c = minCol; c < maxCol; c++) {
+        int limit = Math.min((int) maxCol, MAX_COLS_PER_ROW);
+        for (int c = minCol; c < limit; c++) {
             Cell cell = row.getCell(c);
             String val = getCellStringValue(cell);
             if (val != null) {
@@ -390,7 +419,8 @@ public class ExcelParameterImporter {
         short maxCol = headerRow.getLastCellNum();
         if (minCol < 0 || maxCol < 0) return;
 
-        for (int c = minCol; c < maxCol; c++) {
+        int limit = Math.min((int) maxCol, MAX_COLS_PER_ROW);
+        for (int c = minCol; c < limit; c++) {
             Cell cell = headerRow.getCell(c);
             String val = getCellStringValue(cell);
             if (val != null && !val.isBlank()) {
