@@ -74,8 +74,7 @@ public class TokenProviderResolver {
                 result.setActualStatus(response.getStatusCode());
                 result.setLatencyMs(response.getLatencyMs());
                 result.setResolvedUrl(response.getResolvedUrl());
-                result.setActualBody(response.getBody());
-                result.setActualHeaders(response.getHeaders());
+                // Do not retain raw body/headers on token provider result to prevent leaking credentials
 
                 boolean statusOk = response.getStatusCode() >= 200 && response.getStatusCode() < 300;
                 result.setStatusPassed(statusOk);
@@ -114,7 +113,7 @@ public class TokenProviderResolver {
                     if (extractedToken != null && !extractedToken.isBlank()) {
                         result.setBodyPassed(true);
                         result.setTokenExtracted(extractedToken);
-                        result.setDiffSummary("Token successfully extracted: " + varName + "=" + mask(extractedToken));
+                        result.setDiffSummary("Token successfully extracted for variable: " + varName);
                         outcome.getResolvedTokens().put(varName, extractedToken);
                         runContextVariables.put(varName, extractedToken);
                     } else if (!outcome.getFailedTokens().containsKey(varName)) {

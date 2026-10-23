@@ -27,7 +27,8 @@ public class TestResult {
     private Map<String, List<String>> actualHeaders;
     private String errorMessage;
     private boolean tokenProvider;
-    private String tokenExtracted;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private transient String tokenExtracted;
 
     public TestResult() {
     }
@@ -160,12 +161,18 @@ public class TestResult {
         this.tokenProvider = tokenProvider;
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
     public String getTokenExtracted() {
         return tokenExtracted;
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
     public void setTokenExtracted(String tokenExtracted) {
         this.tokenExtracted = tokenExtracted;
+    }
+
+    public boolean isTokenExtracted() {
+        return tokenExtracted != null && !tokenExtracted.isBlank();
     }
 
     @Override

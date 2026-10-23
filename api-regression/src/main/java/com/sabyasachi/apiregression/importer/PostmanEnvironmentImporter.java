@@ -34,6 +34,16 @@ public class PostmanEnvironmentImporter {
         return parse(root);
     }
 
+    private boolean storeSecretsAsReferences = false;
+
+    public boolean isStoreSecretsAsReferences() {
+        return storeSecretsAsReferences;
+    }
+
+    public void setStoreSecretsAsReferences(boolean storeSecretsAsReferences) {
+        this.storeSecretsAsReferences = storeSecretsAsReferences;
+    }
+
     public Map<String, String> parse(JsonNode root) {
         Map<String, String> envVars = new LinkedHashMap<>();
         if (root == null) {
@@ -50,7 +60,13 @@ public class PostmanEnvironmentImporter {
                     String key = item.get("key").asText("");
                     String value = item.has("value") ? item.get("value").asText("") : "";
                     if (!key.isBlank()) {
-                        envVars.put(key.trim(), value);
+                        boolean isSecret = (item.has("type") && "secret".equalsIgnoreCase(item.get("type").asText()))
+                                || (storeSecretsAsReferences && com.sabyasachi.apiregression.util.Redactor.isSensitiveKey(key));
+                        if (isSecret) {
+                            envVars.put(key.trim(), "{{env:" + key.trim() + "}}");
+                        } else {
+                            envVars.put(key.trim(), value);
+                        }
                     }
                 }
             }
@@ -58,7 +74,12 @@ public class PostmanEnvironmentImporter {
             // Flat key-value format fallback
             root.fields().forEachRemaining(entry -> {
                 if (entry.getValue().isValueNode()) {
-                    envVars.put(entry.getKey(), entry.getValue().asText());
+                    String key = entry.getKey();
+                    if (storeSecretsAsReferences && com.sabyasachi.apiregression.util.Redactor.isSensitiveKey(key)) {
+                        envVars.put(key, "{{env:" + key + "}}");
+                    } else {
+                        envVars.put(key, entry.getValue().asText());
+                    }
                 }
             });
         }

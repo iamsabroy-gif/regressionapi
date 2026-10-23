@@ -93,4 +93,65 @@ public class ReportWriterTest {
         assertTrue(html.contains("updateUser"));
         assertTrue(html.contains("address.city"));
     }
+
+    @Test
+    public void s6_htmlEscapesAllFields(@TempDir Path tempDir) throws IOException {
+        ReportWriter writer = new ReportWriter();
+
+        OverrideReport report = new OverrideReport();
+        report.setWorkbook("dangerous<script>alert(1)</script>.xlsx");
+
+        SheetSummary summary = new SheetSummary();
+        summary.setSheet("<script>alert('sheet')</script>");
+        summary.setTargetTestCase("Dangerous Case <svg onload=alert(2)>");
+        summary.setStatus("STATUS<tag>");
+        summary.setMatchedBy("MATCH&VAL");
+        report.getSheets().add(summary);
+
+        OverrideEntry entry = new OverrideEntry();
+        entry.setSheet("<script>alert('sheet')</script>");
+        entry.setRow(1);
+        entry.setParameter("name&param<test>");
+        entry.setAction(OverrideAction.MODIFIED);
+        entry.setRawValue("\"><img onerror=alert(3)>");
+        entry.setReason("Reason with <script> and & symbol");
+        entry.getWarnings().add("Warning <script>");
+        report.getEntries().add(entry);
+
+        Path htmlPath = tempDir.resolve("escaped_override.html");
+        writer.writeOverrideHtml(report, htmlPath);
+
+        String html = Files.readString(htmlPath);
+        // Assert raw dangerous tags are absent
+        assertFalse(html.contains("<script>"), "HTML report must not contain raw <script>");
+        assertFalse(html.contains("<svg onload"), "HTML report must not contain raw <svg>");
+        assertFalse(html.contains("<img onerror"), "HTML report must not contain raw <img onerror>");
+
+        // Assert escaped characters present
+        assertTrue(html.contains("&lt;script&gt;"));
+        assertTrue(html.contains("&amp;"));
+        assertTrue(html.contains("&quot;&gt;&lt;img"));
+    }
+
+    @Test
+    public void s6_cspMetaPresent(@TempDir Path tempDir) throws IOException {
+        ReportWriter writer = new ReportWriter();
+
+        Path resultsHtml = tempDir.resolve("results.html");
+        writer.writeHtml(List.of(new TestResult("Test A")), resultsHtml);
+
+        Path overrideHtml = tempDir.resolve("override.html");
+        OverrideReport report = new OverrideReport();
+        report.setWorkbook("test.xlsx");
+        writer.writeOverrideHtml(report, overrideHtml);
+
+        String rHtml = Files.readString(resultsHtml);
+        String oHtml = Files.readString(overrideHtml);
+
+        String expectedCsp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">";
+        assertTrue(rHtml.contains(expectedCsp), "results.html must have CSP meta tag");
+        assertTrue(oHtml.contains(expectedCsp), "override.html must have CSP meta tag");
+        assertTrue(rHtml.contains("<meta charset=\"UTF-8\">"));
+        assertTrue(oHtml.contains("<meta charset=\"UTF-8\">"));
+    }
 }

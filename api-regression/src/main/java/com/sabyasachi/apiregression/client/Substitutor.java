@@ -44,8 +44,21 @@ public class Substitutor {
 
         while (matcher.find()) {
             String key = matcher.group(1).trim();
+            String replacement = null;
+            boolean resolved = false;
+
             if (variables.containsKey(key)) {
-                String replacement = variables.get(key);
+                replacement = variables.get(key);
+                resolved = true;
+            } else if (key.startsWith("env:")) {
+                String envKey = key.substring(4).trim();
+                replacement = resolveEnvSecret(envKey);
+                if (replacement != null) {
+                    resolved = true;
+                }
+            }
+
+            if (resolved) {
                 // Quote replacement to treat characters like $ and \ literally
                 matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement != null ? replacement : ""));
             } else {
@@ -56,6 +69,39 @@ public class Substitutor {
         matcher.appendTail(sb);
 
         return new SubstitutionResult(sb.toString(), unresolved);
+    }
+
+    private static String resolveEnvSecret(String envKey) {
+        if (envKey == null || envKey.isBlank()) {
+            return null;
+        }
+        // 1. System property APIREG_SECRET_<KEY> (for easy test setup)
+        String val = System.getProperty("APIREG_SECRET_" + envKey);
+        if (val != null) return val;
+
+        // 2. Environment variable APIREG_SECRET_<KEY>
+        val = System.getenv("APIREG_SECRET_" + envKey);
+        if (val != null) return val;
+
+        // 3. Fallback direct property/env
+        val = System.getProperty(envKey);
+        if (val != null) return val;
+        val = System.getenv(envKey);
+        if (val != null) return val;
+
+        // 4. Fallback to secrets.local.json if exists in current dir
+        java.nio.file.Path localSecrets = java.nio.file.Path.of("secrets.local.json");
+        if (java.nio.file.Files.exists(localSecrets)) {
+            try {
+                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(localSecrets.toFile());
+                if (root.has(envKey)) {
+                    return root.get(envKey).asText();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     public static Set<String> extractPlaceholders(String input) {

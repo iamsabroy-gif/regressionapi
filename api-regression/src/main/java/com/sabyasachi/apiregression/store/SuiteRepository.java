@@ -28,10 +28,8 @@ public class SuiteRepository {
         if (suite == null) {
             throw new IllegalArgumentException("TestSuite cannot be null");
         }
-        if (path.getParent() != null) {
-            Files.createDirectories(path.getParent());
-        }
-        objectMapper.writeValue(path.toFile(), suite);
+        byte[] bytes = objectMapper.writeValueAsBytes(suite);
+        com.sabyasachi.apiregression.util.Redactor.writeAtomicWith0600(path, bytes);
     }
 
     public TestSuite load(Path path) throws IOException {
