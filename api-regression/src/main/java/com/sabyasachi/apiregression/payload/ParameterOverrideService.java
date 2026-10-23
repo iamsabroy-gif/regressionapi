@@ -21,6 +21,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -50,7 +51,42 @@ public class ParameterOverrideService {
     }
 
     public OverrideReport apply(TestSuite suite, Path xlsxPath, Path specPath, OverrideOptions options) throws IOException {
+        return apply(suite, xlsxPath, specPath, options, null);
+    }
+
+    public OverrideReport apply(TestSuite suite, Path xlsxPath, Path specPath, OverrideOptions options, OverrideReport dryRunReport) throws IOException {
+        if (dryRunReport != null) {
+            if (xlsxPath != null && Files.exists(xlsxPath)) {
+                String currentWbSha = ProviderSpecLoader.computeSha256(Files.readAllBytes(xlsxPath));
+                if (dryRunReport.getWorkbookSha256() != null && !dryRunReport.getWorkbookSha256().equals(currentWbSha)) {
+                    throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                            "Workbook changed since preview. Please re-run dry run before applying.");
+                }
+            }
+            if (specPath != null && Files.exists(specPath)) {
+                String currentSpecSha = ProviderSpecLoader.computeSha256(Files.readAllBytes(specPath));
+                if (dryRunReport.getSpecSha256() != null && !dryRunReport.getSpecSha256().equals(currentSpecSha)) {
+                    throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                            "Spec changed since preview. Please re-run dry run before applying.");
+                }
+            }
+        }
         return process(suite, xlsxPath, specPath, options != null ? options : new OverrideOptions(), false);
+    }
+
+    public static String computeRequestFingerprint(String url, Map<String, String> headers, String bodyTemplate) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(url != null ? url : "").append("\n");
+        if (headers != null) {
+            List<String> sortedKeys = new ArrayList<>(headers.keySet());
+            Collections.sort(sortedKeys, String.CASE_INSENSITIVE_ORDER);
+            for (String k : sortedKeys) {
+                sb.append(k.toLowerCase(Locale.ROOT)).append("=").append(headers.get(k)).append("\n");
+            }
+        }
+        sb.append("\n");
+        sb.append(bodyTemplate != null ? bodyTemplate : "");
+        return ProviderSpecLoader.computeSha256(sb.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     private OverrideReport process(TestSuite suite, Path xlsxPath, Path specPath, OverrideOptions options, boolean isDryRun) throws IOException {
@@ -102,6 +138,43 @@ public class ParameterOverrideService {
         for (SheetParams sheet : parsedSheets) {
             SheetSummary summary = new SheetSummary(sheet.getSheetName(), sheet.getTarget());
             report.getSheets().add(summary);
+
+            // Handle sheet-level skipped (e.g. HIDDEN_SHEET)
+            if ("SKIPPED".equalsIgnoreCase(sheet.getStatus())) {
+                summary.setStatus("SKIPPED");
+                OverrideEntry entry = new OverrideEntry();
+                entry.setSheet(sheet.getSheetName());
+                entry.setRow(1);
+                entry.setParameter("sheet");
+                entry.setAction(OverrideAction.SKIPPED);
+                ReasonCode rc = ReasonCode.HIDDEN_SHEET;
+                if (sheet.getSkipReason() != null) {
+                    try { rc = ReasonCode.valueOf(sheet.getSkipReason()); } catch (Exception ignored) {}
+                }
+                entry.setReasonCode(rc);
+                entry.setReason("Sheet is skipped: " + rc);
+                report.getEntries().add(entry);
+                continue;
+            }
+
+            // Handle sheet-level not applied (e.g. ROW_CAP_EXCEEDED)
+            if ("NOT_APPLIED".equalsIgnoreCase(sheet.getStatus())) {
+                summary.setStatus("NOT_APPLIED");
+                summary.setErrors(1);
+                OverrideEntry entry = new OverrideEntry();
+                entry.setSheet(sheet.getSheetName());
+                entry.setRow(1);
+                entry.setParameter("sheet");
+                entry.setAction(OverrideAction.ERROR);
+                ReasonCode rc = ReasonCode.ROW_CAP_EXCEEDED;
+                if (sheet.getSkipReason() != null) {
+                    try { rc = ReasonCode.valueOf(sheet.getSkipReason()); } catch (Exception ignored) {}
+                }
+                entry.setReasonCode(rc);
+                entry.setReason(sheet.getSheetWarnings().isEmpty() ? "Sheet row cap exceeded" : sheet.getSheetWarnings().get(0));
+                report.getEntries().add(entry);
+                continue;
+            }
 
             // Sheet-level warnings (e.g. ROW_CAP_EXCEEDED)
             boolean rowCapExceeded = false;
@@ -156,6 +229,14 @@ public class ParameterOverrideService {
             TestCase targetTc = matchResult.getTestCase();
             summary.setTargetTestCase(targetTc.getName());
             summary.setMatchedBy(matchResult.getMatchedBy());
+
+            // Check if manual edits occurred since last import
+            if (targetTc.getLastOverride() != null && targetTc.getLastOverride().getProducedFingerprint() != null) {
+                String currentFp = computeRequestFingerprint(targetTc.getUrl(), targetTc.getHeaders(), targetTc.getBodyTemplate());
+                if (!currentFp.equals(targetTc.getLastOverride().getProducedFingerprint())) {
+                    summary.addSheetWarning("MANUAL_EDITS_DISCARDED: manual edits since last import will be discarded.");
+                }
+            }
 
             // Check duplicate sheet targeting same TestCase (D2)
             if (targetedInThisWorkbook.contains(targetTc)) {
@@ -217,6 +298,15 @@ public class ParameterOverrideService {
                 entry.setParameter(row.getParameter());
                 entry.setRawValue(row.getRawValue());
                 entry.getWarnings().addAll(row.getWarnings());
+
+                if (row.isDuplicate()) {
+                    entry.setAction(OverrideAction.SKIPPED);
+                    entry.setReasonCode(ReasonCode.DUPLICATE);
+                    entry.setReason(row.getSupersededByRow() != null ? "Superseded by row " + row.getSupersededByRow() : "Duplicate parameter superseded");
+                    summary.setSkipped(summary.getSkipped() + 1);
+                    report.getEntries().add(entry);
+                    continue;
+                }
 
                 if (!row.isEnabled()) {
                     entry.setAction(OverrideAction.SKIPPED);
@@ -393,6 +483,10 @@ public class ParameterOverrideService {
                     prov.setAdded(summary.getAdded());
                     prov.setErrors(summary.getErrors());
                     prov.setWarnings(summary.getWarnings());
+                    String finalBody = (bodyModifiedOrAdded && workingBodyNode != null) ?
+                            templateCodec.encode(workingBodyNode, parsedBody.getUnquotedPlaceholders()) : targetTc.getBodyTemplate();
+                    String producedFp = computeRequestFingerprint(workingUrl, workingHeaders, finalBody);
+                    prov.setProducedFingerprint(producedFp);
                     targetTc.setLastOverride(prov);
                 } catch (Exception ex) {
                     log.error("Failed to commit WorkingRequest to TestCase", ex);

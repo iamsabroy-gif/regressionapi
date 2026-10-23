@@ -154,4 +154,91 @@ public class ReportWriterTest {
         assertTrue(rHtml.contains("<meta charset=\"UTF-8\">"));
         assertTrue(oHtml.contains("<meta charset=\"UTF-8\">"));
     }
+
+    @Test
+    public void writeOverrideJson_hasHeaderAndPerSheetCounts(@TempDir Path tempDir) throws IOException {
+        ReportWriter writer = new ReportWriter();
+
+        OverrideReport report = new OverrideReport();
+        report.setWorkbook("customers.xlsx");
+        report.setWorkbookSha256("sha-wb-123");
+        report.setSpecPath("customers-oas3.yaml");
+        report.setSpecVersion("openapi: 3.0.3");
+        report.setSpecSha256("sha-spec-456");
+        report.setPolicy(com.sabyasachi.apiregression.payload.ConstraintPolicy.STRICT);
+        report.setDryRun(true);
+        report.setCreatedAt(Instant.now());
+
+        SheetSummary s1 = new SheetSummary("Sheet1", "POST /customers");
+        s1.setModified(3);
+        s1.setAdded(2);
+        s1.setErrors(1);
+        report.getSheets().add(s1);
+
+        Path jsonPath = tempDir.resolve("override_header.json");
+        writer.writeOverrideJson(report, jsonPath);
+
+        String json = Files.readString(jsonPath);
+        assertTrue(json.contains("\"workbook\" : \"customers.xlsx\""));
+        assertTrue(json.contains("\"workbookSha256\" : \"sha-wb-123\""));
+        assertTrue(json.contains("\"specPath\" : \"customers-oas3.yaml\""));
+        assertTrue(json.contains("\"specVersion\" : \"openapi: 3.0.3\""));
+        assertTrue(json.contains("\"specSha256\" : \"sha-spec-456\""));
+        assertTrue(json.contains("\"policy\" : \"STRICT\""));
+        assertTrue(json.contains("\"dryRun\" : true"));
+        assertTrue(json.contains("\"createdAt\""));
+        assertTrue(json.contains("\"sheets\""));
+    }
+
+    @Test
+    public void writeOverrideHtml_summaryTableAndErrorRowsFirst(@TempDir Path tempDir) throws IOException {
+        ReportWriter writer = new ReportWriter();
+
+        OverrideReport report = new OverrideReport();
+        report.setWorkbook("customers.xlsx");
+        report.setWorkbookSha256("sha-wb");
+        report.setSpecPath("spec.yaml");
+        report.setSpecVersion("3.0.3");
+        report.setSpecSha256("sha-spec");
+        report.setPolicy(com.sabyasachi.apiregression.payload.ConstraintPolicy.WARN);
+        report.setDryRun(false);
+        report.setCreatedAt(Instant.now());
+
+        report.getSpecMessages().add("Test spec warning message");
+
+        // Add entries out of order: MODIFIED, then ADDED, then ERROR, then SKIPPED
+        OverrideEntry eMod = new OverrideEntry();
+        eMod.setSheet("S1"); eMod.setRow(1); eMod.setParameter("modParam"); eMod.setAction(OverrideAction.MODIFIED);
+        report.getEntries().add(eMod);
+
+        OverrideEntry eAdd = new OverrideEntry();
+        eAdd.setSheet("S1"); eAdd.setRow(2); eAdd.setParameter("addParam"); eAdd.setAction(OverrideAction.ADDED);
+        report.getEntries().add(eAdd);
+
+        OverrideEntry eErr = new OverrideEntry();
+        eErr.setSheet("S1"); eErr.setRow(3); eErr.setParameter("errParam"); eErr.setAction(OverrideAction.ERROR); eErr.setReason("Some error");
+        report.getEntries().add(eErr);
+
+        OverrideEntry eSkip = new OverrideEntry();
+        eSkip.setSheet("S1"); eSkip.setRow(4); eSkip.setParameter("skipParam"); eSkip.setAction(OverrideAction.SKIPPED);
+        report.getEntries().add(eSkip);
+
+        Path htmlPath = tempDir.resolve("sorted_report.html");
+        writer.writeOverrideHtml(report, htmlPath);
+
+        String html = Files.readString(htmlPath);
+        assertTrue(html.contains("Specification Messages:"));
+        assertTrue(html.contains("Test spec warning message"));
+
+        // Verify order in HTML: ERROR must appear before SKIPPED, before ADDED, before MODIFIED
+        int idxErr = html.indexOf("errParam");
+        int idxSkip = html.indexOf("skipParam");
+        int idxAdd = html.indexOf("addParam");
+        int idxMod = html.indexOf("modParam");
+
+        assertTrue(idxErr != -1 && idxSkip != -1 && idxAdd != -1 && idxMod != -1);
+        assertTrue(idxErr < idxSkip, "ERROR should appear before SKIPPED");
+        assertTrue(idxSkip < idxAdd, "SKIPPED should appear before ADDED");
+        assertTrue(idxAdd < idxMod, "ADDED should appear before MODIFIED");
+    }
 }

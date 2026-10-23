@@ -107,7 +107,17 @@ public class OverridePreviewPanel extends JPanel {
             public boolean isCellEditable(int row, int column) { return false; }
         };
 
-        for (OverrideEntry e : report.getEntries()) {
+        List<OverrideEntry> sortedEntries = new java.util.ArrayList<>(report.getEntries());
+        sortedEntries.sort((a, b) -> {
+            int rA = ReportWriter.actionRank(a.getAction());
+            int rB = ReportWriter.actionRank(b.getAction());
+            if (rA != rB) return Integer.compare(rA, rB);
+            int sCmp = (a.getSheet() != null ? a.getSheet() : "").compareTo(b.getSheet() != null ? b.getSheet() : "");
+            if (sCmp != 0) return sCmp;
+            return Integer.compare(a.getRow(), b.getRow());
+        });
+
+        for (OverrideEntry e : sortedEntries) {
             String oldVal = (e.getOldValue() != null) ? e.getOldValue().toString() : "-";
             String newVal = (e.getCoercedValue() != null) ? e.getCoercedValue().toString() : (e.getRawValue() != null ? e.getRawValue() : "-");
             String details = (e.getReason() != null ? e.getReason() : "") +

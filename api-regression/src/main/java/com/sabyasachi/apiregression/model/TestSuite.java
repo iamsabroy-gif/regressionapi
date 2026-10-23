@@ -16,6 +16,15 @@ public class TestSuite {
     private String specPath;
     private transient String filePath;
     private com.sabyasachi.apiregression.payload.OverrideOptions overrideOptions = new com.sabyasachi.apiregression.payload.OverrideOptions();
+    private RunOptions runOptions = new RunOptions();
+
+    public RunOptions getRunOptions() {
+        return runOptions;
+    }
+
+    public void setRunOptions(RunOptions runOptions) {
+        this.runOptions = runOptions != null ? runOptions : new RunOptions();
+    }
 
     public String getFilePath() {
         return filePath;

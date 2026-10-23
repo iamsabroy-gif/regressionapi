@@ -165,7 +165,7 @@ public class ParameterImportDialog extends JDialog {
             previewPanel = new OverridePreviewPanel(report, () -> {
                 try {
                     // Apply overrides
-                    service.apply(suite, wbFile.toPath(), specPath, options);
+                    OverrideReport applyReport = service.apply(suite, wbFile.toPath(), specPath, options, report);
                     applied = true;
                     if (specPathStr != null && !specPathStr.isBlank()) {
                         suite.setSpecPath(specPathStr);
@@ -175,8 +175,7 @@ public class ParameterImportDialog extends JDialog {
                         onAppliedCallback.run();
                     }
                     JOptionPane.showMessageDialog(this,
-                            "Overrides applied successfully!\nModified: " + report.getTotalModified() +
-                                    " | Added: " + report.getTotalAdded() + " | Skipped: " + report.getTotalSkipped(),
+                            ApplyResultFormatter.format(applyReport),
                             "Overrides Applied", JOptionPane.INFORMATION_MESSAGE);
                     dispose();
                 } catch (Exception ex) {

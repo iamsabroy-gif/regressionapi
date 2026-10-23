@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sabyasachi.apiregression.model.TestResult;
+import com.sabyasachi.apiregression.payload.OverrideAction;
 import com.sabyasachi.apiregression.payload.OverrideEntry;
 import com.sabyasachi.apiregression.payload.OverrideReport;
 import com.sabyasachi.apiregression.payload.SheetSummary;
@@ -99,9 +100,23 @@ public class ReportWriter {
                 .append(".badge.ERROR { background: rgba(239, 68, 68, 0.2); color: #ef4444; }\n")
                 .append("</style>\n</head>\n<body>\n<div class=\"container\">\n")
                 .append("<div class=\"header\"><h1>Parameter Override Report (").append(processed.isDryRun() ? "DRY RUN" : "APPLIED").append(")</h1>\n")
-                .append("<div style=\"color:var(--muted);\">Workbook: <strong>").append(esc(processed.getWorkbook())).append("</strong></div>\n")
-                .append("<div style=\"color:var(--muted);font-size:12px;\">Spec: ").append(esc(processed.getSpecPath() != null ? processed.getSpecPath() : "None")).append("</div>\n")
+                .append("<div style=\"color:var(--muted);\">Workbook: <strong>").append(esc(processed.getWorkbook())).append("</strong>")
+                .append(processed.getWorkbookSha256() != null ? " <small>(SHA-256: " + esc(processed.getWorkbookSha256()) + ")</small>" : "").append("</div>\n")
+                .append("<div style=\"color:var(--muted);font-size:12px;\">Spec: ").append(esc(processed.getSpecPath() != null ? processed.getSpecPath() : "None"))
+                .append(processed.getSpecVersion() != null ? " | Version: " + esc(processed.getSpecVersion()) : "")
+                .append(processed.getSpecSha256() != null ? " | SHA-256: " + esc(processed.getSpecSha256()) : "").append("</div>\n")
+                .append("<div style=\"color:var(--muted);font-size:12px;\">Policy: <strong>").append(esc(processed.getPolicy())).append("</strong>")
+                .append(" | Created: ").append(esc(processed.getCreatedAt() != null ? processed.getCreatedAt().toString() : "")).append("</div>\n")
                 .append("</div>\n");
+
+        if (processed.getSpecMessages() != null && !processed.getSpecMessages().isEmpty()) {
+            sb.append("<div style=\"background:#3b2d18;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:20px;color:#fcd34d;\">\n")
+                    .append("<strong>Specification Messages:</strong><ul style=\"margin:6px 0 0 20px;padding:0;\">\n");
+            for (String sm : processed.getSpecMessages()) {
+                sb.append("<li>").append(esc(sm)).append("</li>\n");
+            }
+            sb.append("</ul></div>\n");
+        }
 
         sb.append("<div class=\"stats\">\n")
                 .append("<div class=\"card\"><div class=\"lbl\">Modified</div><div class=\"val\" style=\"color:#3b82f6;\">").append(esc(processed.getTotalModified())).append("</div></div>\n")
@@ -336,8 +351,26 @@ public class ReportWriter {
                 }
                 copy.getEntries().add(ec);
             }
+            copy.getEntries().sort((a, b) -> {
+                int rA = actionRank(a.getAction());
+                int rB = actionRank(b.getAction());
+                if (rA != rB) return Integer.compare(rA, rB);
+                int sCmp = (a.getSheet() != null ? a.getSheet() : "").compareTo(b.getSheet() != null ? b.getSheet() : "");
+                if (sCmp != 0) return sCmp;
+                return Integer.compare(a.getRow(), b.getRow());
+            });
         }
         return copy;
+    }
+
+    public static int actionRank(OverrideAction action) {
+        if (action == null) return 99;
+        return switch (action) {
+            case ERROR -> 0;
+            case SKIPPED -> 1;
+            case ADDED -> 2;
+            case MODIFIED -> 3;
+        };
     }
 
     private OverrideEntry copyEntry(OverrideEntry e) {

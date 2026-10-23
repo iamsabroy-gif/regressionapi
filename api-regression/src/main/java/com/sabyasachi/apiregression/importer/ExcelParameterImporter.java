@@ -75,11 +75,33 @@ public class ExcelParameterImporter {
         }
     }
 
+    private static final Set<String> ALLOWED_HEADERS = Set.of("parameter", "value", "type", "location", "enabled", "notes");
+    private static final Set<String> REJECTED_HEADERS = Set.of("op", "path", "param", "action", "operation");
+
     public List<SheetParams> parse(InputStream inputStream, boolean skipHiddenSheets, int maxRowsPerSheet) throws IOException {
         configureZipSecurity();
         List<SheetParams> results = new ArrayList<>();
 
-        try (Workbook workbook = new XSSFWorkbook(inputStream)) {
+        InputStream is = org.apache.poi.poifs.filesystem.FileMagic.prepareToCheckMagic(inputStream);
+        org.apache.poi.poifs.filesystem.FileMagic magic = org.apache.poi.poifs.filesystem.FileMagic.valueOf(is);
+        if (magic == org.apache.poi.poifs.filesystem.FileMagic.OLE2) {
+            try (org.apache.poi.poifs.filesystem.POIFSFileSystem poifs = new org.apache.poi.poifs.filesystem.POIFSFileSystem(is)) {
+                if (poifs.getRoot().hasEntry("EncryptionInfo") || poifs.getRoot().hasEntry(org.apache.poi.poifs.crypt.EncryptionInfo.ENCRYPTION_INFO_ENTRY)) {
+                    throw new OverrideException(ReasonCode.WORKBOOK_ENCRYPTED,
+                            "The workbook is password-protected or encrypted. Please save an unprotected copy and re-import.");
+                }
+            } catch (OverrideException oe) {
+                throw oe;
+            } catch (Exception ignored) {
+            }
+            throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                    "Only .xlsx Excel workbooks are supported. Please 'Save As .xlsx' in Excel and re-import.");
+        } else if (magic != org.apache.poi.poifs.filesystem.FileMagic.OOXML) {
+            throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                    "Unsupported file format: expected .xlsx file.");
+        }
+
+        try (Workbook workbook = new XSSFWorkbook(is)) {
             int sheetCount = workbook.getNumberOfSheets();
             if (sheetCount > MAX_SHEETS_PER_WORKBOOK) {
                 throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
@@ -93,7 +115,13 @@ public class ExcelParameterImporter {
                 SheetParams sheetParams = new SheetParams();
                 sheetParams.setSheetName(sheetName);
 
-                if (isVeryHidden || (isHidden && skipHiddenSheets)) {
+                if (isVeryHidden) {
+                    continue; // Very hidden always skipped
+                }
+                if (isHidden && skipHiddenSheets) {
+                    sheetParams.setStatus("SKIPPED");
+                    sheetParams.setSkipReason(ReasonCode.HIDDEN_SHEET.name());
+                    results.add(sheetParams);
                     continue;
                 }
 
@@ -128,7 +156,6 @@ public class ExcelParameterImporter {
             return;
         }
 
-        // Check for merged regions to handle top-left cell detection
         List<CellRangeAddress> mergedRegions = sheet.getMergedRegions();
 
         // 1. Check A1/B1 target metadata & find header row
@@ -139,14 +166,30 @@ public class ExcelParameterImporter {
             Row row = sheet.getRow(r);
             if (row == null) continue;
 
-            // Check if this row is the header row
+            // Reject op/path/param headers
+            short minCol = row.getFirstCellNum();
+            short maxCol = row.getLastCellNum();
+            if (minCol >= 0 && maxCol >= 0) {
+                int limit = Math.min((int) maxCol, MAX_COLS_PER_ROW);
+                for (int c = minCol; c < limit; c++) {
+                    Cell cell = row.getCell(c);
+                    String val = getCellStringValue(cell);
+                    if (val != null && !val.isBlank()) {
+                        String clean = val.trim().toLowerCase(Locale.ROOT);
+                        if (REJECTED_HEADERS.contains(clean)) {
+                            throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                                    "Invalid column header '" + val.trim() + "'. Expected columns: parameter, value, type, location, enabled, notes");
+                        }
+                    }
+                }
+            }
+
             int paramCol = findHeaderCell(row, "parameter");
             if (paramCol != -1) {
                 headerRowNum = r;
                 mapColumns(row, colMap, sheetParams);
                 break;
             } else {
-                // Check metadata key/value in col A & B
                 Cell cellA = row.getCell(0);
                 Cell cellB = row.getCell(1);
                 String key = getCellStringValue(cellA);
@@ -174,11 +217,9 @@ public class ExcelParameterImporter {
             return;
         }
 
-        // 2. Parse data rows after header row
         int paramCol = colMap.getOrDefault("parameter", -1);
         int valueCol = colMap.getOrDefault("value", -1);
         int typeCol = colMap.getOrDefault("type", -1);
-        int opCol = colMap.getOrDefault("op", -1);
         int locCol = colMap.getOrDefault("location", -1);
         int enabledCol = colMap.getOrDefault("enabled", -1);
         int notesCol = colMap.getOrDefault("notes", -1);
@@ -188,32 +229,47 @@ public class ExcelParameterImporter {
             return;
         }
 
-        int rowCount = 0;
+        // Count data rows for row cap
+        int dataRowCount = 0;
+        for (int r = headerRowNum + 1; r <= lastRowNum; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            Cell pCell = row.getCell(paramCol);
+            String pVal = getCellStringValue(pCell);
+            if (pVal != null && !pVal.isBlank()) {
+                dataRowCount++;
+            }
+        }
+
+        if (dataRowCount > maxRowsPerSheet) {
+            sheetParams.setStatus("NOT_APPLIED");
+            sheetParams.setSkipReason(ReasonCode.ROW_CAP_EXCEEDED.name());
+            sheetParams.getRows().clear();
+            sheetParams.addSheetWarning("ROW_CAP_EXCEEDED: Sheet exceeds maximum allowed row limit of " + maxRowsPerSheet + " rows (" + dataRowCount + " rows found). Zero rows processed.");
+            return;
+        }
+
         List<ParamRow> rawRows = new ArrayList<>();
 
         for (int r = headerRowNum + 1; r <= lastRowNum; r++) {
             Row row = sheet.getRow(r);
             if (row == null) continue;
 
-            rowCount++;
-            if (rowCount > maxRowsPerSheet) {
-                sheetParams.addSheetWarning("ROW_CAP_EXCEEDED: Sheet exceeds maximum allowed row limit of " + maxRowsPerSheet + " rows. Excess rows ignored.");
-                break;
-            }
-
-            // Check if row is blank
             Cell pCell = row.getCell(paramCol);
             String pVal = getCellStringValue(pCell);
             if (pVal == null || pVal.isBlank()) {
-                continue; // Skip blank parameter rows
+                continue;
             }
 
-            int excelRowNumber = r + 1; // 1-based row
+            int excelRowNumber = r + 1;
             ParamRow paramRow = new ParamRow();
             paramRow.setRow(excelRowNumber);
             paramRow.setParameter(pVal.trim());
 
-            // Check if value cell is part of merged region (non-top-left)
+            if (row.getZeroHeight()) {
+                paramRow.addWarning("Row is hidden or filtered.");
+            }
+
             Cell vCell = row.getCell(valueCol);
             if (vCell != null && isNonTopLeftMerged(vCell, mergedRegions)) {
                 paramRow.setRawValue(null);
@@ -223,7 +279,6 @@ public class ExcelParameterImporter {
                 extractCellValue(vCell, paramRow);
             }
 
-            // Type column
             if (typeCol != -1) {
                 String t = getCellStringValue(row.getCell(typeCol));
                 if (t != null && !t.isBlank()) {
@@ -231,7 +286,6 @@ public class ExcelParameterImporter {
                 }
             }
 
-            // Location column
             if (locCol != -1) {
                 String l = getCellStringValue(row.getCell(locCol));
                 if (l != null && !l.isBlank()) {
@@ -242,7 +296,6 @@ public class ExcelParameterImporter {
                 paramRow.setExplicitLocation(sheetParams.getDefaultLocation());
             }
 
-            // Enabled column
             if (enabledCol != -1) {
                 String eStr = getCellStringValue(row.getCell(enabledCol));
                 if (eStr != null && !eStr.isBlank()) {
@@ -253,38 +306,28 @@ public class ExcelParameterImporter {
                 }
             }
 
-            // Notes column
             if (notesCol != -1) {
                 paramRow.setNotes(getCellStringValue(row.getCell(notesCol)));
-            }
-
-            // Op column
-            if (opCol != -1) {
-                String opVal = getCellStringValue(row.getCell(opCol));
-                if (opVal != null && !opVal.isBlank()) {
-                    paramRow.setOp(opVal.trim());
-                }
             }
 
             rawRows.add(paramRow);
         }
 
-        // 3. Duplicate parameter handling (§3a.2): Last row wins!
-        Map<String, ParamRow> winningRows = new LinkedHashMap<>();
+        // 3. Duplicate parameter handling (§3a.2): Last row wins! Earlier rows marked duplicate
+        Map<String, ParamRow> seen = new HashMap<>();
         for (ParamRow pr : rawRows) {
-            String key = pr.getParameter().toLowerCase();
-            if (winningRows.containsKey(key)) {
-                ParamRow prev = winningRows.get(key);
-                if (pr.getOp() == null || pr.getOp().equals("replace")) {
-                    if (prev.getOp() != null) {
-                        pr.setOp(prev.getOp());
-                    }
-                }
-                pr.addWarning("DUPLICATE: parameter appears multiple times in sheet; superseded row " + prev.getRow());
+            String normKey = pr.getParameter().trim().toLowerCase(Locale.ROOT);
+            if (seen.containsKey(normKey)) {
+                ParamRow earlier = seen.get(normKey);
+                earlier.setDuplicate(true);
+                earlier.setSupersededByRow(pr.getRow());
+                earlier.addWarning("DUPLICATE: parameter appears multiple times in sheet; superseded by row " + pr.getRow());
+
+                pr.addWarning("DUPLICATE: parameter appears multiple times in sheet; superseded row " + earlier.getRow());
             }
-            winningRows.put(key, pr);
+            seen.put(normKey, pr);
         }
-        sheetParams.getRows().addAll(winningRows.values());
+        sheetParams.getRows().addAll(rawRows);
     }
 
     private void extractCellValue(Cell cell, ParamRow paramRow) {
@@ -401,12 +444,8 @@ public class ExcelParameterImporter {
             Cell cell = row.getCell(c);
             String val = getCellStringValue(cell);
             if (val != null) {
-                String clean = val.trim().toLowerCase();
-                if ("parameter".equals(targetHeader)) {
-                    if ("parameter".equals(clean) || "path".equals(clean) || "param".equals(clean)) {
-                        return c;
-                    }
-                } else if (clean.equals(targetHeader.toLowerCase())) {
+                String clean = val.trim().toLowerCase(Locale.ROOT);
+                if (targetHeader.equalsIgnoreCase(clean)) {
                     return c;
                 }
             }
@@ -424,12 +463,12 @@ public class ExcelParameterImporter {
             Cell cell = headerRow.getCell(c);
             String val = getCellStringValue(cell);
             if (val != null && !val.isBlank()) {
-                String clean = val.trim().toLowerCase();
-                if ("parameter".equals(clean) || "path".equals(clean) || "param".equals(clean)) {
-                    colMap.put("parameter", c);
-                } else if ("op".equals(clean) || "action".equals(clean) || "operation".equals(clean)) {
-                    colMap.put("op", c);
-                } else if ("value".equals(clean) || "type".equals(clean) || "location".equals(clean) || "enabled".equals(clean) || "notes".equals(clean)) {
+                String clean = val.trim().toLowerCase(Locale.ROOT);
+                if (REJECTED_HEADERS.contains(clean)) {
+                    throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                            "Invalid column header '" + val.trim() + "'. Expected columns: parameter, value, type, location, enabled, notes");
+                }
+                if (ALLOWED_HEADERS.contains(clean)) {
                     colMap.put(clean, c);
                 } else {
                     sheetParams.addSheetWarning("Unknown column header in sheet: '" + val.trim() + "' (ignored).");

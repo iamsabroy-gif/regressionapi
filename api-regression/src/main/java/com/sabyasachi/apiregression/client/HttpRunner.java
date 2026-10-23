@@ -85,16 +85,21 @@ public class HttpRunner {
 
     private final HttpClient httpClient;
     private final Duration timeout;
+    private int retryCount = 0;
     private boolean followRedirects = true;
     private boolean redirectsCrossOriginAllowed = false;
 
     public HttpRunner() {
-        this(Duration.ofSeconds(30));
+        this(Duration.ofSeconds(30), 0);
     }
 
     public HttpRunner(Duration timeout) {
+        this(timeout, 0);
+    }
+
+    public HttpRunner(Duration timeout, int retryCount) {
         this.timeout = timeout != null ? timeout : Duration.ofSeconds(30);
-        // HttpClient.Redirect.NEVER: redirect following handled securely in manual loop
+        this.retryCount = Math.max(0, retryCount);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(this.timeout)
                 .followRedirects(HttpClient.Redirect.NEVER)
@@ -102,8 +107,31 @@ public class HttpRunner {
     }
 
     public HttpRunner(HttpClient httpClient, Duration timeout) {
+        this(httpClient, timeout, 0);
+    }
+
+    public HttpRunner(HttpClient httpClient, Duration timeout, int retryCount) {
         this.httpClient = httpClient;
         this.timeout = timeout != null ? timeout : Duration.ofSeconds(30);
+        this.retryCount = Math.max(0, retryCount);
+    }
+
+    public int getRetryCount() {
+        return retryCount;
+    }
+
+    public void setRetryCount(int retryCount) {
+        this.retryCount = Math.max(0, retryCount);
+    }
+
+    public Duration getTimeout() {
+        return timeout;
+    }
+
+    public static boolean isIdempotentMethod(String method) {
+        if (method == null) return false;
+        String m = method.toUpperCase(Locale.ROOT);
+        return m.equals("GET") || m.equals("HEAD") || m.equals("PUT") || m.equals("DELETE") || m.equals("OPTIONS");
     }
 
     public boolean isFollowRedirects() {
@@ -236,7 +264,31 @@ public class HttpRunner {
             }
 
             HttpRequest request = reqBuilder.build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponse<String> response = null;
+            boolean isIdempotent = isIdempotentMethod(currentMethod);
+            int attemptsLeft = isIdempotent ? retryCount : 0;
+
+            while (true) {
+                try {
+                    response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    int s = response.statusCode();
+                    if (isIdempotent && attemptsLeft > 0 && (s == 502 || s == 503 || s == 504)) {
+                        attemptsLeft--;
+                        long backoff = Math.min(1000L, 50L * (1L << (retryCount - attemptsLeft)));
+                        Thread.sleep(backoff);
+                        continue;
+                    }
+                    break;
+                } catch (IOException e) {
+                    if (isIdempotent && attemptsLeft > 0) {
+                        attemptsLeft--;
+                        long backoff = Math.min(1000L, 50L * (1L << (retryCount - attemptsLeft)));
+                        Thread.sleep(backoff);
+                    } else {
+                        throw e;
+                    }
+                }
+            }
             int status = response.statusCode();
 
             boolean isRedirect = (status == 301 || status == 302 || status == 303 || status == 307 || status == 308);

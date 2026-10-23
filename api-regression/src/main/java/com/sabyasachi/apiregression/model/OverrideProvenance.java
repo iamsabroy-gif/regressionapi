@@ -19,8 +19,17 @@ public class OverrideProvenance {
     private int added;
     private int errors;
     private int warnings;
+    private String producedFingerprint;
 
     public OverrideProvenance() {
+    }
+
+    public String getProducedFingerprint() {
+        return producedFingerprint;
+    }
+
+    public void setProducedFingerprint(String producedFingerprint) {
+        this.producedFingerprint = producedFingerprint;
     }
 
     public String getWorkbookFile() {

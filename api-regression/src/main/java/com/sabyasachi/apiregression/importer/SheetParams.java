@@ -12,9 +12,27 @@ public class SheetParams {
     private String method;
     private String path;
     private String defaultLocation;
+    private String status;
+    private String skipReason;
     private final Map<String, String> metadata = new LinkedHashMap<>();
     private final List<ParamRow> rows = new ArrayList<>();
     private final List<String> sheetWarnings = new ArrayList<>();
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getSkipReason() {
+        return skipReason;
+    }
+
+    public void setSkipReason(String skipReason) {
+        this.skipReason = skipReason;
+    }
 
     public SheetParams() {
     }

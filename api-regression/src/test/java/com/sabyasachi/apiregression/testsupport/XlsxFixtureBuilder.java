@@ -320,4 +320,52 @@ public class XlsxFixtureBuilder {
             }
         }
     }
+
+    public static void createEncryptedWorkbook(Path path, String password) throws Exception {
+        try (org.apache.poi.poifs.filesystem.POIFSFileSystem fs = new org.apache.poi.poifs.filesystem.POIFSFileSystem()) {
+            org.apache.poi.poifs.crypt.EncryptionInfo info = new org.apache.poi.poifs.crypt.EncryptionInfo(org.apache.poi.poifs.crypt.EncryptionMode.agile);
+            org.apache.poi.poifs.crypt.Encryptor encryptor = info.getEncryptor();
+            encryptor.confirmPassword(password);
+            try (Workbook wb = new XSSFWorkbook();
+                 java.io.OutputStream os = encryptor.getDataStream(fs)) {
+                Sheet s = wb.createSheet("Sheet1");
+                Row r = s.createRow(0);
+                r.createCell(0).setCellValue("parameter");
+                r.createCell(1).setCellValue("value");
+                Row r1 = s.createRow(1);
+                r1.createCell(0).setCellValue("name");
+                r1.createCell(1).setCellValue("secret");
+                wb.write(os);
+            }
+            try (FileOutputStream fos = new FileOutputStream(path.toFile())) {
+                fs.writeFilesystem(fos);
+            }
+        }
+    }
+
+    public static void customersWorkbook(Path path) throws IOException {
+        create()
+                .sheet("Create Customer")
+                .target("POST /customers")
+                .text("name", "Jane Doe")
+                .number("limit", 20)
+                .and()
+                .sheet("Add Address and Query")
+                .target("POST /customers")
+                .text("address.city", "Springfield")
+                .text("channel", "web")
+                .and()
+                .sheet("Not in Spec")
+                .target("POST /customers")
+                .text("nonExistentField", "invalid")
+                .and()
+                .sheet("Ambiguous City")
+                .target("POST /customers")
+                .text("city", "Shelbyville")
+                .and()
+                .sheet("Null Field")
+                .target("POST /customers")
+                .text("notes", "<null>")
+                .build(path);
+    }
 }

@@ -3,6 +3,7 @@ package com.sabyasachi.apiregression.runner;
 import com.sabyasachi.apiregression.client.HttpRunner;
 import com.sabyasachi.apiregression.client.Substitutor;
 import com.sabyasachi.apiregression.compare.JsonComparator;
+import com.sabyasachi.apiregression.model.RunOptions;
 import com.sabyasachi.apiregression.model.TestCase;
 import com.sabyasachi.apiregression.model.TestResult;
 import com.sabyasachi.apiregression.model.TestSuite;
@@ -67,83 +68,57 @@ public class SuiteRunner {
             currentIndex = tokenOutcome.getProviderResults().size();
         }
 
-        // 3. Run regular (non-token-provider) TestCases
+        RunOptions runOptions = suite.getRunOptions() != null ? suite.getRunOptions() : new RunOptions();
+        HttpRunner effectiveHttpRunner = this.httpRunner;
+        if (this.httpRunner.getRetryCount() == 0 && runOptions.getRetryCount() > 0) {
+            effectiveHttpRunner.setRetryCount(runOptions.getRetryCount());
+        }
+
+        // 3. Collect regular (non-token-provider) TestCases
+        List<TestCase> regularCases = new ArrayList<>();
         for (TestCase tc : suite.getTestCases()) {
-            if (tc.isTokenProvider()) {
-                continue; // Already executed
+            if (!tc.isTokenProvider()) {
+                regularCases.add(tc);
             }
+        }
 
-            currentIndex++;
-            if (listener != null) {
-                listener.onTestStarted(currentIndex, totalCount, tc);
-            }
-
-            TestResult result = new TestResult(tc.getName());
-            result.setCategory(tc.getCategory());
-            result.setMethod(tc.getMethod());
-            result.setExpectedStatus(tc.getExpectedStatus());
-            result.setExecutedAt(Instant.now());
-
-            // Check if this test case depends on a token provider that failed
-            String failedDependencyReason = null;
-            if (tc.getUsesTokenFrom() != null) {
-                for (String depToken : tc.getUsesTokenFrom()) {
-                    if (tokenOutcome.getFailedTokens().containsKey(depToken)) {
-                        failedDependencyReason = "Token resolution failed for required token [" + depToken + "]: "
-                                + tokenOutcome.getFailedTokens().get(depToken);
-                        break;
-                    }
+        int poolSize = runOptions.getThreads();
+        if (poolSize <= 1 || regularCases.size() <= 1) {
+            for (TestCase tc : regularCases) {
+                currentIndex++;
+                if (listener != null) {
+                    listener.onTestStarted(currentIndex, totalCount, tc);
                 }
-            }
-
-            if (failedDependencyReason != null) {
-                result.setStatusPassed(false);
-                result.setBodyPassed(false);
-                result.setErrorMessage(failedDependencyReason);
-                result.setDiffSummary(failedDependencyReason);
+                TestResult result = executeSingleTestCase(tc, runVariables, tokenOutcome, effectiveHttpRunner);
                 results.add(result);
                 if (listener != null) {
                     listener.onTestCompleted(currentIndex, totalCount, result);
                 }
-                continue;
             }
-
-            // Execute regular test case
+        } else {
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(poolSize);
             try {
-                HttpRunner.ExecutionResponse response = httpRunner.execute(tc, runVariables);
-                result.setActualStatus(response.getStatusCode());
-                result.setLatencyMs(response.getLatencyMs());
-                result.setResolvedUrl(response.getResolvedUrl());
-                result.setActualBody(response.getBody());
-                result.setActualHeaders(response.getHeaders());
-
-                boolean statusPassed = (response.getStatusCode() == tc.getExpectedStatus());
-                result.setStatusPassed(statusPassed);
-
-                // Compare JSON body (substituting any suite/token variables in expected template)
-                String resolvedExpectedBody = null;
-                if (tc.getExpectedBodyTemplate() != null && !tc.getExpectedBodyTemplate().isBlank()) {
-                    resolvedExpectedBody = Substitutor.substitute(tc.getExpectedBodyTemplate(), runVariables).getResult();
+                List<java.util.concurrent.Future<TestResult>> futures = new ArrayList<>();
+                for (TestCase tc : regularCases) {
+                    futures.add(pool.submit(() -> executeSingleTestCase(tc, runVariables, tokenOutcome, effectiveHttpRunner)));
                 }
 
-                JsonComparator.ComparisonResult compResult = JsonComparator.compare(
-                        resolvedExpectedBody,
-                        response.getBody(),
-                        tc.getIgnorePaths()
-                );
-                result.setBodyPassed(compResult.isPassed());
-                result.setDiffSummary(compResult.getDiffSummary());
-
-            } catch (Exception e) {
-                result.setStatusPassed(false);
-                result.setBodyPassed(false);
-                result.setErrorMessage("Execution error: " + e.getMessage());
-                result.setDiffSummary("Execution error: " + e.getMessage());
-            }
-
-            results.add(result);
-            if (listener != null) {
-                listener.onTestCompleted(currentIndex, totalCount, result);
+                for (java.util.concurrent.Future<TestResult> f : futures) {
+                    currentIndex++;
+                    try {
+                        TestResult result = f.get();
+                        results.add(result);
+                        if (listener != null) {
+                            listener.onTestCompleted(currentIndex, totalCount, result);
+                        }
+                    } catch (Exception ex) {
+                        TestResult errResult = new TestResult("Execution Error");
+                        errResult.setErrorMessage(ex.getMessage());
+                        results.add(errResult);
+                    }
+                }
+            } finally {
+                pool.shutdown();
             }
         }
 
@@ -152,5 +127,68 @@ public class SuiteRunner {
         }
 
         return results;
+    }
+
+    private TestResult executeSingleTestCase(TestCase tc, Map<String, String> runVariables,
+                                            TokenProviderResolver.TokenResolutionOutcome tokenOutcome,
+                                            HttpRunner runner) {
+        TestResult result = new TestResult(tc.getName());
+        result.setCategory(tc.getCategory());
+        result.setMethod(tc.getMethod());
+        result.setExpectedStatus(tc.getExpectedStatus());
+        result.setExecutedAt(Instant.now());
+
+        // Check token dependencies
+        String failedDependencyReason = null;
+        if (tc.getUsesTokenFrom() != null) {
+            for (String depToken : tc.getUsesTokenFrom()) {
+                if (tokenOutcome.getFailedTokens().containsKey(depToken)) {
+                    failedDependencyReason = "Token resolution failed for required token [" + depToken + "]: "
+                            + tokenOutcome.getFailedTokens().get(depToken);
+                    break;
+                }
+            }
+        }
+
+        if (failedDependencyReason != null) {
+            result.setStatusPassed(false);
+            result.setBodyPassed(false);
+            result.setErrorMessage(failedDependencyReason);
+            result.setDiffSummary(failedDependencyReason);
+            return result;
+        }
+
+        try {
+            HttpRunner.ExecutionResponse response = runner.execute(tc, runVariables);
+            result.setActualStatus(response.getStatusCode());
+            result.setLatencyMs(response.getLatencyMs());
+            result.setResolvedUrl(response.getResolvedUrl());
+            result.setActualBody(response.getBody());
+            result.setActualHeaders(response.getHeaders());
+
+            boolean statusPassed = (response.getStatusCode() == tc.getExpectedStatus());
+            result.setStatusPassed(statusPassed);
+
+            String resolvedExpectedBody = null;
+            if (tc.getExpectedBodyTemplate() != null && !tc.getExpectedBodyTemplate().isBlank()) {
+                resolvedExpectedBody = Substitutor.substitute(tc.getExpectedBodyTemplate(), runVariables).getResult();
+            }
+
+            JsonComparator.ComparisonResult compResult = JsonComparator.compare(
+                    resolvedExpectedBody,
+                    response.getBody(),
+                    tc.getIgnorePaths()
+            );
+            result.setBodyPassed(compResult.isPassed());
+            result.setDiffSummary(compResult.getDiffSummary());
+
+        } catch (Exception e) {
+            result.setStatusPassed(false);
+            result.setBodyPassed(false);
+            result.setErrorMessage("Execution error: " + e.getMessage());
+            result.setDiffSummary("Execution error: " + e.getMessage());
+        }
+
+        return result;
     }
 }

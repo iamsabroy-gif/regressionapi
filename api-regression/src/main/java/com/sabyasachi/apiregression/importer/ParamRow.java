@@ -30,7 +30,25 @@ public class ParamRow {
     private String op = "replace";
     private boolean enabled = true;
     private String notes;
+    private boolean duplicate = false;
+    private Integer supersededByRow;
     private final List<String> warnings = new ArrayList<>();
+
+    public boolean isDuplicate() {
+        return duplicate;
+    }
+
+    public void setDuplicate(boolean duplicate) {
+        this.duplicate = duplicate;
+    }
+
+    public Integer getSupersededByRow() {
+        return supersededByRow;
+    }
+
+    public void setSupersededByRow(Integer supersededByRow) {
+        this.supersededByRow = supersededByRow;
+    }
 
     public ParamRow() {
     }

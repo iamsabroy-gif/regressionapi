@@ -190,11 +190,13 @@ public class TestCase {
             this.url = baseline.getUrl();
             this.headers = new LinkedHashMap<>(baseline.getHeaders());
             this.bodyTemplate = baseline.getBodyTemplate();
+            this.lastOverride = null;
         }
     }
 
     public void promoteToBaseline() {
         this.baseline = RequestSnapshot.from(this);
+        this.lastOverride = null;
     }
 
     @Override

@@ -102,17 +102,30 @@ public class Main {
 
         String htmlOut = null;
         String jsonOut = null;
+        Integer timeoutSec = null;
+        Integer retries = null;
+        Integer threads = null;
+
         for (int i = 2; i < args.length; i++) {
             if ("--html".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
                 htmlOut = args[++i];
             } else if ("--json".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
                 jsonOut = args[++i];
+            } else if ("--timeout".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
+                timeoutSec = Integer.parseInt(args[++i]);
+            } else if ("--retries".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
+                retries = Integer.parseInt(args[++i]);
+            } else if ("--threads".equalsIgnoreCase(args[i]) && i + 1 < args.length) {
+                threads = Integer.parseInt(args[++i]);
             }
         }
 
         try {
             SuiteRepository repository = new SuiteRepository();
             TestSuite suite = repository.load(suiteFile.toPath());
+            if (timeoutSec != null) suite.getRunOptions().setTimeoutSeconds(timeoutSec);
+            if (retries != null) suite.getRunOptions().setRetryCount(retries);
+            if (threads != null) suite.getRunOptions().setThreads(threads);
             System.out.println("Loaded suite: " + suite.getName() + " (" + suite.getTestCases().size() + " test cases)");
 
             SuiteRunner runner = new SuiteRunner();
