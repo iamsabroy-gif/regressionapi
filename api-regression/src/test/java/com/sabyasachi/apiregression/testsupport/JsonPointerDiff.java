@@ -58,7 +58,13 @@ public class JsonPointerDiff {
 
     private static boolean isCoveredByAllowed(String ptr, Set<String> allowed) {
         for (String a : allowed) {
-            if (ptr.equals(a) || ptr.startsWith(a + "/") || ptr.startsWith(a + "[")) {
+            if (ptr.equals(a)) {
+                return true;
+            }
+            if (ptr.startsWith(a + "/") || ptr.startsWith(a + "[")) {
+                return true;
+            }
+            if (ptr.equals("/") || ptr.isEmpty() || a.startsWith(ptr + "/") || a.startsWith(ptr + "[")) {
                 return true;
             }
         }

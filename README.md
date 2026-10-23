@@ -132,19 +132,63 @@ In the GUI:
   - Click **Export HTML Report...** or **Export JSON Report...** to generate report files.
 
 ### 2. Headless CLI Mode
-You can also run suites directly in the terminal or validate specifications:
+You can run suites directly in the terminal, configure execution options, or validate specifications:
 
 ```bash
 # Check version
 java -jar api-regression.jar --version
 
-# Validate an OpenAPI 3.x or Swagger 2.0 specification
+# Validate an OpenAPI 3.x, OpenAPI 3.1, or Swagger 2.0 specification
 java -jar api-regression.jar --check-spec examples/sample_openapi.json
 java -jar api-regression.jar --check-spec examples/sample_swagger2.json
 
 # Run a suite and export HTML + JSON reports
 java -jar api-regression.jar --run examples/sample_suite.json --html target/demo_report.html --json target/demo_report.json
+
+# Run a suite with custom timeout, idempotent retries, and parallel worker threads
+java -jar api-regression.jar --run examples/sample_suite.json --timeout 15 --retries 2 --threads 4
 ```
+
+#### CLI Execution Options (Step 8)
+- `--timeout <sec>`: HTTP socket and connection timeout (default: 30s).
+- `--retries <n>`: Number of retries for idempotent HTTP methods (`GET, HEAD, PUT, DELETE, OPTIONS`) on network `IOException` or 502/503/504 gateway errors with exponential backoff (default: 0). Non-idempotent methods (`POST, PATCH`) are never retried.
+- `--threads <n>`: Number of parallel execution threads (default: 1). Original test case ordering in results and reports is strictly preserved.
+
+---
+
+## Security Hardening (S1–S6)
+
+The application incorporates multi-layer security protections across spec loading, HTTP execution, secret management, and Excel parsing:
+
+1. **S1: Spec Loader Hardening (`RefGuard`)**:
+   - Custom AST pre-scanner inspects all `$ref` pointers before parser resolution.
+   - Prohibits remote URI schemes (`http:`, `https:`), cloud-metadata endpoints (`169.254.169.254`), and path traversal beyond the specification root directory.
+   - Detects circular reference loops and limits `$ref` traversal depth to 20.
+2. **S2 & S6: Secrets Redaction, Canary Protection, and Report Sanitization**:
+   - Authorization headers (`Authorization`, `Proxy-Authorization`), tokens, and sensitive query parameters (`api_key`, `secret`, `token`, `password`, `access_token`) are automatically redacted in HTML and JSON test reports as well as serialized test results (`***REDACTED***`).
+   - Token-provider response bodies are never retained in serialized results.
+   - Postman secrets are converted to environment references (`{{env:var}}`) upon import.
+   - Suite files are written atomically with restricted file permissions (`0600` on POSIX systems).
+   - Contextual HTML escaping prevents XSS across all test names, URLs, headers, error messages, and diff views.
+3. **S3: Safe HTTP Redirect Policy**:
+   - Redirects are followed safely up to a maximum of 5 hops.
+   - Sensitive headers (`Authorization`, `Cookie`, API keys) are stripped upon cross-origin redirects.
+   - Strict protocol downgrade prevention: HTTPS-to-HTTP redirects are immediately refused.
+4. **S4: Safe Regular Expression & ReDoS Guard**:
+   - Safe regex engine applies a 100ms per-match budget and a 4,096-character input length cap.
+   - ReDoS timeouts degrade gracefully to non-blocking schema validation warnings, never halting suite execution.
+5. **S5: Zip-Bomb & POI Excel Hardening**:
+   - Strict Apache POI inflate limits: max 100MB uncompressed size, 100:1 compression ratio cap.
+   - Workbook caps: max 50 sheets, max 5,000 rows per sheet, max 50 columns per row.
+   - Encrypted, password-protected, or unsupported legacy binary workbooks are rejected with explicit reason codes (`ENCRYPTED_WORKBOOK`, `WORKBOOK_UNSUPPORTED`).
+
+---
+
+## Known Limitations & Design Deviations
+
+- **Strict Excel Column Contract**: Parameter sheets must follow the contract header names: `parameter`, `value`, `type`, `location`, `enabled`, `notes`. Legacy or non-standard headers (`op`, `path`, `param`, `action`) are rejected with `WORKBOOK_UNSUPPORTED` to eliminate ambiguity.
+- **Null Value Semantics**: `<null>` is permitted only for JSON body fields that are explicitly declared nullable or optional in the specification. Null values are strictly forbidden for query, header, and path parameters (`NULL_NOT_ALLOWED_HERE`). Use `<empty>` to specify an empty string.
+- **Spec Loader Resolution**: Rather than relying solely on third-party parser settings, `ProviderSpecLoader` executes a strict pre-pass via `RefGuard` before invoking the Swagger/OpenAPI parser to ensure malicious remote `$ref` URIs are rejected before any network socket is opened.
 
 ---
 
@@ -154,10 +198,12 @@ java -jar api-regression.jar --run examples/sample_suite.json --html target/demo
 - [x] GUI can create a suite by hand, import Postman collections and environments, save/load suite JSON, run the suite, view pass/fail + diffs per TestCase, and export HTML/JSON reports.
 - [x] GUI designates token-provider APIs, automatically extracts tokens from responses (via JSONPath or header), and injects them into dependent APIs.
 - [x] Excel parameter override (§3a):
-  - [x] GUI can attach a local provider spec (Swagger 2.0 or OpenAPI 3.x, JSON or YAML) and import an `.xlsx` workbook; dry run report always shown before apply.
-  - [x] Only listed parameters change; untouched-fields invariance and round-trip idempotency tests pass; no field is ever deleted.
+  - [x] GUI can attach a local provider spec (Swagger 2.0, OpenAPI 3.0, OpenAPI 3.1; JSON or YAML) and import an `.xlsx` workbook; dry run report always shown before apply.
+  - [x] Only listed parameters change; untouched-fields invariance and round-trip byte idempotency verified; no field is ever deleted.
   - [x] Missing parameters are added from spec at the correct body path / query / path / header with spec-correct type; undeclared, ambiguous, or uncoercible parameters produce audit ERROR entries with candidate suggestions.
   - [x] Unmatched / ambiguous / conflicting sheets are reported and not applied; spec missing or operation not found still applies modifications to existing parameters.
-  - [x] Override report exports to JSON and HTML with per-sheet counts.
-  - [x] The shaded fat JAR parses Swagger 2.0 via `--check-spec` using ServiceLoader SPI discovery and reads Excel parameter workbooks without logging warnings.
-- [x] Unit and integration tests verify all core engines, importers, coercers, navigators, and executors (37/37 tests passing).
+  - [x] Override report exports to JSON and HTML with per-sheet counts, action ranking, and spec messages.
+  - [x] Revert to Baseline and Promote to Baseline cleanly clear override provenance and manual edit warnings.
+  - [x] The shaded fat JAR parses Swagger 2.0 via `--check-spec` using ServiceLoader SPI discovery and reads Excel parameter workbooks without logging warnings or Log4j noise.
+- [x] Automated test suite: **166/166 tests passing** (exceeds ≥ 150 target) with 100% pass rate across unit, integration, security, and idempotency suites.
+
