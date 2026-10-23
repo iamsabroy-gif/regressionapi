@@ -1,0 +1,129 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Customer API Sample",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.example.com/v1"
+    }
+  ],
+  "paths": {
+    "/customers": {
+      "post": {
+        "operationId": "createCustomer",
+        "summary": "Create a new customer",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Customer"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Customer created"
+          }
+        }
+      }
+    },
+    "/customers/{id}": {
+      "get": {
+        "operationId": "getCustomerById",
+        "summary": "Get customer by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CustomerBase": {
+        "type": "object",
+        "required": ["name", "email"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "readOnly": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "required": ["city"],
+        "properties": {
+          "street": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "zipCode": {
+            "type": "string"
+          }
+        }
+      },
+      "Customer": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CustomerBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "address": {
+                "$ref": "#/components/schemas/Address"
+              },
+              "tier": {
+                "type": "string",
+                "enum": ["STANDARD", "PREMIUM", "VIP"]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

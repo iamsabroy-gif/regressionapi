@@ -1,0 +1,63 @@
+{
+  "info": {
+    "_postman_id": "coll-456",
+    "name": "Phase 1 Sample API Collection",
+    "description": "Sample collection demonstrating standard APIs, environment variable substitution, and token generation.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Public Endpoints",
+      "item": [
+        {
+          "name": "Get UUID (Volatile Field Example)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/uuid"
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ]
+          },
+          "response": [
+            {
+              "name": "Sample UUID Response",
+              "code": 200,
+              "body": "{\n  \"uuid\": \"11111111-2222-3333-4444-555555555555\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Post JSON Echo",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/post"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organization\": \"{{companyName}}\",\n  \"purpose\": \"Regression Testing\"\n}"
+            }
+          },
+          "response": [
+            {
+              "name": "Sample Post Response",
+              "code": 200,
+              "body": "{\n  \"json\": {\n    \"organization\": \"Acme Corp\",\n    \"purpose\": \"Regression Testing\"\n  }\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

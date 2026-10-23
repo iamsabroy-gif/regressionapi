@@ -1,0 +1,119 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Customer API Sample (Swagger 2.0)",
+    "version": "1.0.0"
+  },
+  "host": "api.example.com",
+  "basePath": "/v1",
+  "schemes": [
+    "https"
+  ],
+  "paths": {
+    "/customers": {
+      "post": {
+        "operationId": "createCustomer",
+        "summary": "Create a new customer",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/Customer"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Customer created"
+          }
+        }
+      }
+    },
+    "/customers/{id}": {
+      "get": {
+        "operationId": "getCustomerById",
+        "summary": "Get customer by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "integer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer found"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "CustomerBase": {
+      "type": "object",
+      "required": ["name", "email"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "readOnly": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        }
+      }
+    },
+    "Address": {
+      "type": "object",
+      "required": ["city"],
+      "properties": {
+        "street": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        },
+        "zipCode": {
+          "type": "string"
+        }
+      }
+    },
+    "Customer": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/CustomerBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "address": {
+              "$ref": "#/definitions/Address"
+            },
+            "tier": {
+              "type": "string",
+              "enum": ["STANDARD", "PREMIUM", "VIP"]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

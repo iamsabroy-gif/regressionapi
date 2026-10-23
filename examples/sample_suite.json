@@ -1,0 +1,66 @@
+{
+  "name": "Phase 1 Complete Demo Suite",
+  "baseUrl": "https://httpbin.org",
+  "specPath": "sample_openapi.json",
+  "variables": {
+    "companyName": "Acme Corp",
+    "department": "Engineering"
+  },
+  "testCases": [
+    {
+      "name": "Generate Authman Token (Echo)",
+      "category": "Authentication",
+      "method": "POST",
+      "url": "{{baseUrl}}/post",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "bodyTemplate": "{\n  \"access_token\": \"authman_token_xyz_987\",\n  \"token_type\": \"Bearer\"\n}",
+      "expectedStatus": 200,
+      "tokenProvider": true,
+      "tokenJsonPath": "$.json.access_token",
+      "tokenVariableName": "authToken"
+    },
+    {
+      "name": "Call Secured API with Injected Token",
+      "category": "Business Logic",
+      "method": "GET",
+      "url": "{{baseUrl}}/headers",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Bearer {{authToken}}"
+      },
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"headers\": {\n    \"Accept\": \"application/json\",\n    \"Authorization\": \"Bearer {{authToken}}\"\n  }\n}",
+      "ignorePaths": [
+        "$.headers.Host",
+        "$.headers.User-Agent",
+        "$.headers.X-Amzn-Trace-Id"
+      ],
+      "usesTokenFrom": [
+        "authToken"
+      ]
+    },
+    {
+      "name": "Post Data Payload",
+      "category": "Business Logic",
+      "method": "POST",
+      "url": "{{baseUrl}}/post",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "bodyTemplate": "{\n  \"company\": \"{{companyName}}\",\n  \"dept\": \"{{department}}\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"json\": {\n    \"company\": \"Acme Corp\",\n    \"dept\": \"Engineering\"\n  }\n}",
+      "ignorePaths": [
+        "$.origin",
+        "$.headers",
+        "$.url",
+        "$.files",
+        "$.form",
+        "$.args",
+        "$.data"
+      ]
+    }
+  ]
+}
