@@ -12,10 +12,12 @@ public class PayloadOverrider {
     public static class ApplyResult {
         private final JsonNode oldValue;
         private final boolean isAdded;
+        private final JsonNode resultRoot;
 
-        public ApplyResult(JsonNode oldValue, boolean isAdded) {
+        public ApplyResult(JsonNode oldValue, boolean isAdded, JsonNode resultRoot) {
             this.oldValue = oldValue;
             this.isAdded = isAdded;
+            this.resultRoot = resultRoot;
         }
 
         public JsonNode getOldValue() {
@@ -25,9 +27,13 @@ public class PayloadOverrider {
         public boolean isAdded() {
             return isAdded;
         }
+
+        public JsonNode getResultRoot() {
+            return resultRoot;
+        }
     }
 
-    public static JsonNode findExistingNode(ObjectNode root, ParamPath path) {
+    public static JsonNode findExistingNode(JsonNode root, ParamPath path) {
         if (root == null || path == null) return null;
         JsonNode current = root;
 
@@ -47,12 +53,12 @@ public class PayloadOverrider {
         return current;
     }
 
-    public static ApplyResult applyOverride(ObjectNode root, ParamPath path, JsonNode newValue) {
+    public static ApplyResult applyOverride(JsonNode root, ParamPath path, JsonNode newValue) {
         if (root == null) {
-            throw new IllegalArgumentException("Root ObjectNode cannot be null.");
+            throw new OverrideException(ReasonCode.INTERNAL_ERROR, "Root node cannot be null.");
         }
         if (path == null || path.getSegments().isEmpty()) {
-            throw new IllegalArgumentException("ParamPath cannot be empty.");
+            throw new OverrideException(ReasonCode.PATH_INVALID, "ParamPath cannot be empty.");
         }
 
         List<ParamPath.Segment> segments = path.getSegments();
@@ -66,7 +72,8 @@ public class PayloadOverrider {
 
             if (seg.isArray()) {
                 if (!current.isArray()) {
-                    throw new IllegalArgumentException("Expected array at path segment " + seg + " but found: " + current.getNodeType());
+                    throw new OverrideException(ReasonCode.PATH_INVALID,
+                            "Expected array at path segment " + seg + " but found: " + current.getNodeType());
                 }
                 ArrayNode arr = (ArrayNode) current;
                 int idx = seg.getArrayIndex();
@@ -79,7 +86,8 @@ public class PayloadOverrider {
                         oldValue = arr.get(idx);
                         arr.set(idx, newValue);
                     } else {
-                        throw new IllegalArgumentException("Array index [" + idx + "] out of bounds for array of size " + arr.size() + "; sparse array fill is not allowed.");
+                        throw new OverrideException(ReasonCode.INDEX_OUT_OF_RANGE,
+                                "Array index [" + idx + "] out of bounds for array of size " + arr.size() + "; sparse array fill is not allowed.");
                     }
                 } else {
                     if (idx < arr.size()) {
@@ -91,13 +99,15 @@ public class PayloadOverrider {
                         arr.add(nextNode);
                         current = nextNode;
                     } else {
-                        throw new IllegalArgumentException("Array index [" + idx + "] out of bounds for array of size " + arr.size() + "; sparse array fill is not allowed.");
+                        throw new OverrideException(ReasonCode.INDEX_OUT_OF_RANGE,
+                                "Array index [" + idx + "] out of bounds for array of size " + arr.size() + "; sparse array fill is not allowed.");
                     }
                 }
             } else {
                 // Object property segment
                 if (!current.isObject()) {
-                    throw new IllegalArgumentException("Expected JSON object at path segment " + seg + " but found: " + current.getNodeType());
+                    throw new OverrideException(ReasonCode.PATH_INVALID,
+                            "Expected JSON object at path segment " + seg + " but found: " + current.getNodeType());
                 }
                 ObjectNode obj = (ObjectNode) current;
                 String prop = seg.getPropertyName();
@@ -120,10 +130,10 @@ public class PayloadOverrider {
             }
         }
 
-        return new ApplyResult(oldValue, added);
+        return new ApplyResult(oldValue, added, root);
     }
 
-    public static List<String> findCandidatePathsForLeaf(ObjectNode root, String leafName) {
+    public static List<String> findCandidatePathsForLeaf(JsonNode root, String leafName) {
         List<String> candidates = new ArrayList<>();
         if (root == null || leafName == null || leafName.isBlank()) return candidates;
         collectLeafPaths(root, "$", leafName.trim(), candidates);
@@ -152,52 +162,10 @@ public class PayloadOverrider {
         }
     }
 
-    public static ApplyResult removeOverride(ObjectNode root, ParamPath path) {
-        if (root == null || path == null || path.getSegments().isEmpty()) {
-            return new ApplyResult(null, false);
-        }
-        List<ParamPath.Segment> segments = path.getSegments();
-        JsonNode current = root;
-        for (int i = 0; i < segments.size(); i++) {
-            ParamPath.Segment seg = segments.get(i);
-            boolean isLast = (i == segments.size() - 1);
-            if (isLast) {
-                if (seg.isArray()) {
-                    if (current.isArray()) {
-                        ArrayNode arr = (ArrayNode) current;
-                        int idx = seg.getArrayIndex();
-                        if (idx >= 0 && idx < arr.size()) {
-                            JsonNode old = arr.remove(idx);
-                            return new ApplyResult(old, false);
-                        }
-                    }
-                } else {
-                    if (current.isObject()) {
-                        ObjectNode obj = (ObjectNode) current;
-                        JsonNode old = obj.remove(seg.getPropertyName());
-                        return new ApplyResult(old, false);
-                    }
-                }
-            } else {
-                if (seg.isArray()) {
-                    if (!current.isArray()) return new ApplyResult(null, false);
-                    ArrayNode arr = (ArrayNode) current;
-                    int idx = seg.getArrayIndex();
-                    if (idx < 0 || idx >= arr.size()) return new ApplyResult(null, false);
-                    current = arr.get(idx);
-                } else {
-                    if (!current.isObject()) return new ApplyResult(null, false);
-                    current = current.get(seg.getPropertyName());
-                    if (current == null) return new ApplyResult(null, false);
-                }
-            }
-        }
-        return new ApplyResult(null, false);
-    }
-
     public static ApplyResult apply(JsonNode root, ParamPath path, Object value, OverrideAction action) {
-        if (!(root instanceof ObjectNode objRoot)) {
-            throw new IllegalArgumentException("Root node must be ObjectNode, but was: " + (root != null ? root.getNodeType() : "null"));
+        if (root == null || (!root.isObject() && !root.isArray())) {
+            throw new OverrideException(ReasonCode.PATH_INVALID,
+                    "Root node must be ObjectNode or ArrayNode, but was: " + (root != null ? root.getNodeType() : "null"));
         }
         JsonNode nodeVal;
         if (value instanceof JsonNode jn) {
@@ -213,6 +181,9 @@ public class PayloadOverrider {
         } else {
             nodeVal = JsonNodeFactory.instance.textNode(value.toString());
         }
-        return applyOverride(objRoot, path, nodeVal);
+
+        // Apply on a row-scoped deep copy so failure leaves the original untouched
+        JsonNode workingCopy = root.deepCopy();
+        return applyOverride(workingCopy, path, nodeVal);
     }
 }

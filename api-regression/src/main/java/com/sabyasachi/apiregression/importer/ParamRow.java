@@ -1,16 +1,30 @@
 package com.sabyasachi.apiregression.importer;
 
-import com.sabyasachi.apiregression.payload.OverrideAction;
-
 import java.util.ArrayList;
 import java.util.List;
 
 public class ParamRow {
 
+    public enum CellKind {
+        TEXT,
+        NUMERIC,
+        BOOLEAN,
+        DATE,
+        FORMULA_OK,
+        ERROR,
+        NO_CACHE,
+        TOO_PRECISE,
+        BLANK;
+
+        public boolean isErrorKind() {
+            return this == ERROR || this == NO_CACHE || this == TOO_PRECISE;
+        }
+    }
+
     private int row; // 1-based row number
     private String parameter;
     private String rawValue;
-    private String cellKind = "TEXT";
+    private CellKind cellKind = CellKind.TEXT;
     private String explicitType;
     private String explicitLocation;
     private String op = "replace";
@@ -60,11 +74,27 @@ public class ParamRow {
     }
 
     public String getCellKind() {
+        return cellKind != null ? cellKind.name() : "TEXT";
+    }
+
+    public CellKind getCellKindEnum() {
         return cellKind;
     }
 
-    public void setCellKind(String cellKind) {
-        this.cellKind = cellKind;
+    public void setCellKind(String cellKindStr) {
+        if (cellKindStr == null) {
+            this.cellKind = CellKind.TEXT;
+            return;
+        }
+        try {
+            this.cellKind = CellKind.valueOf(cellKindStr.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            this.cellKind = CellKind.TEXT;
+        }
+    }
+
+    public void setCellKindEnum(CellKind kind) {
+        this.cellKind = kind != null ? kind : CellKind.TEXT;
     }
 
     public String getExplicitType() {

@@ -1,5 +1,8 @@
 package com.sabyasachi.apiregression.spec;
 
+import com.sabyasachi.apiregression.payload.OverrideException;
+import com.sabyasachi.apiregression.payload.ReasonCode;
+import com.sabyasachi.apiregression.payload.UrlParts;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -9,6 +12,14 @@ import io.swagger.v3.oas.models.servers.Server;
 import java.util.*;
 
 public class SpecIndex {
+
+    public List<String> getServerBasePaths() {
+        return Collections.unmodifiableList(serverBasePaths);
+    }
+
+    public String getBasePath() {
+        return serverBasePaths.isEmpty() ? "" : serverBasePaths.get(0);
+    }
 
     public static class OperationMatch {
         private final String pathTemplate;
@@ -185,7 +196,15 @@ public class SpecIndex {
         }
 
         if (tieCount > 1) {
-            throw new IllegalArgumentException("AMBIGUOUS_OPERATION: multiple path templates match URL '" + rawUrl + "' with identical specificity.");
+            List<String> candList = new ArrayList<>();
+            for (OperationMatch om : methodCandidates) {
+                if (scorePathMatch(cleanPath, om.getPathTemplate()) == maxLiteralSegments) {
+                    String opId = (om.getOperation() != null) ? om.getOperation().getOperationId() : "unnamed";
+                    candList.add(om.getMethod() + " " + om.getPathTemplate() + " (" + opId + ")");
+                }
+            }
+            throw new OverrideException(ReasonCode.AMBIGUOUS_OPERATION,
+                    "AMBIGUOUS_OPERATION: multiple path templates match URL '" + rawUrl + "' with identical specificity.", candList);
         }
 
         return bestMatch;
@@ -201,29 +220,14 @@ public class SpecIndex {
     }
 
     private String extractCleanPath(String url) {
-        String u = url.trim();
-        // Strip query string
-        int qIdx = u.indexOf('?');
-        if (qIdx != -1) {
-            u = u.substring(0, qIdx);
-        }
+        UrlParts parts = UrlParts.parse(url);
+        String u = parts.getPath();
 
-        // Strip {{baseUrl}} if present
-        if (u.startsWith("{{baseUrl}}")) {
-            u = u.substring("{{baseUrl}}".length());
-        }
-
-        // Strip scheme and host if present
-        int scheme = u.indexOf("://");
-        if (scheme != -1) {
-            int pathStart = u.indexOf('/', scheme + 3);
-            u = (pathStart != -1) ? u.substring(pathStart) : "";
-        }
-
-        // Strip server basePaths if matched at start
+        // Strip server basePaths if matched at segment boundary
         for (String base : serverBasePaths) {
-            if (!base.isEmpty() && u.startsWith(base)) {
-                u = u.substring(base.length());
+            String b = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+            if (!b.isEmpty() && (u.equals(b) || u.startsWith(b + "/"))) {
+                u = u.substring(b.length());
                 break;
             }
         }

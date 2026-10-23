@@ -4,8 +4,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class ParamPath {
 
@@ -49,7 +47,7 @@ public class ParamPath {
 
         @Override
         public String toString() {
-            return isArray() ? "[" + arrayIndex + "]" : propertyName;
+            return isArray() ? "[" + (arrayIndex == Integer.MAX_VALUE ? "" : arrayIndex) + "]" : propertyName;
         }
 
         @Override
@@ -79,85 +77,150 @@ public class ParamPath {
 
     public static ParamPath parse(String input) {
         if (input == null || input.isBlank()) {
-            throw new IllegalArgumentException("Parameter path cannot be null or empty.");
+            throw new OverrideException(ReasonCode.PATH_INVALID, "Parameter path cannot be null or empty.");
         }
 
         String raw = input.trim();
 
-        // Guard against wildcards, recursive descent, filters
         if (raw.contains("*")) {
-            throw new IllegalArgumentException("Wildcards ('*') are not permitted in parameter path: " + raw);
+            throw new OverrideException(ReasonCode.PATH_UNSUPPORTED, "Wildcards ('*') are not permitted in parameter path: " + raw);
         }
         if (raw.contains("..")) {
-            throw new IllegalArgumentException("Recursive descent ('..') is not permitted in parameter path: " + raw);
+            throw new OverrideException(ReasonCode.PATH_UNSUPPORTED, "Recursive descent ('..') is not permitted in parameter path: " + raw);
         }
         if (raw.contains("?(") || raw.contains("?@")) {
-            throw new IllegalArgumentException("Filters ('?()') are not permitted in parameter path: " + raw);
+            throw new OverrideException(ReasonCode.PATH_UNSUPPORTED, "Filters ('?()') are not permitted in parameter path: " + raw);
         }
 
-        // Check if explicit path: starts with '$', or contains '.' or '['
+        // Root reference only: "$"
+        if (raw.equals("$")) {
+            return new ParamPath(raw, Collections.emptyList(), true, "$");
+        }
+
         boolean explicit = raw.startsWith("$") || raw.contains(".") || raw.contains("[");
 
-        String toTokenize = raw;
-        if (toTokenize.startsWith("$.")) {
-            toTokenize = toTokenize.substring(2);
-        } else if (toTokenize.startsWith("$")) {
-            toTokenize = toTokenize.substring(1);
+        String s = raw;
+        if (s.startsWith("$.")) {
+            s = s.substring(2);
+        } else if (s.startsWith("$[")) {
+            s = s.substring(1);
+        } else if (s.startsWith("$")) {
+            s = s.substring(1);
         }
 
-        List<Segment> segList = new ArrayList<>();
+        if (s.isEmpty()) {
+            return new ParamPath(raw, Collections.emptyList(), true, "$");
+        }
 
         if (!explicit) {
             // Bare name
-            segList.add(new Segment(raw));
-            return new ParamPath(raw, segList, false, raw);
+            return new ParamPath(raw, List.of(new Segment(raw)), false, raw);
         }
 
-        // Tokenize explicit path: handles dot segments `.foo`, array brackets `[0]`, empty `[]`, and bracket quotes `['foo.bar']`
-        Pattern tokenPattern = Pattern.compile("\\[(['\"])(.*?)\\1\\]|\\[(\\d+)\\]|(\\[\\])|\\.([^.\\[]+)|([^.\\[]+)");
-        Matcher matcher = tokenPattern.matcher(toTokenize);
+        List<Segment> segList = new ArrayList<>();
+        int i = 0;
+        int len = s.length();
 
-        while (matcher.find()) {
-            if (matcher.group(2) != null) {
-                // Bracket quote: ['odd.key']
-                segList.add(new Segment(matcher.group(2)));
-            } else if (matcher.group(3) != null) {
-                // Array index: [0]
-                int idx = Integer.parseInt(matcher.group(3));
-                segList.add(new Segment(idx));
-            } else if (matcher.group(4) != null) {
-                // Empty array bracket: [] (append marker, index Integer.MAX_VALUE)
-                segList.add(new Segment(Integer.MAX_VALUE));
-            } else if (matcher.group(5) != null) {
-                // Dot segment: .city
-                String seg = matcher.group(5).trim();
-                if (!seg.isEmpty()) {
-                    segList.add(new Segment(seg));
+        while (i < len) {
+            char c = s.charAt(i);
+
+            if (c == '.') {
+                if (i == len - 1) {
+                    throw new OverrideException(ReasonCode.PATH_INVALID, "Trailing dot in path: " + raw);
                 }
-            } else if (matcher.group(6) != null) {
-                // Start segment: customer
-                String seg = matcher.group(6).trim();
-                if (!seg.isEmpty()) {
-                    segList.add(new Segment(seg));
+                i++;
+                if (s.charAt(i) == '.') {
+                    throw new OverrideException(ReasonCode.PATH_UNSUPPORTED, "Empty dot segment in path: " + raw);
                 }
+                continue;
+            }
+
+            if (c == '[') {
+                i++; // skip '['
+                if (i >= len) {
+                    throw new OverrideException(ReasonCode.PATH_INVALID, "Unterminated bracket in path: " + raw);
+                }
+
+                char quote = s.charAt(i);
+                if (quote == '\'' || quote == '"') {
+                    // Quoted property: ['foo.bar']
+                    i++;
+                    int start = i;
+                    while (i < len && s.charAt(i) != quote) {
+                        i++;
+                    }
+                    if (i >= len) {
+                        throw new OverrideException(ReasonCode.PATH_INVALID, "Unclosed quote in bracket notation: " + raw);
+                    }
+                    String propName = s.substring(start, i);
+                    i++; // skip quote
+                    if (i >= len || s.charAt(i) != ']') {
+                        throw new OverrideException(ReasonCode.PATH_INVALID, "Expected ']' after quoted property in: " + raw);
+                    }
+                    i++; // skip ']'
+                    segList.add(new Segment(propName));
+                } else if (s.charAt(i) == ']') {
+                    // Empty bracket: []
+                    i++;
+                    segList.add(new Segment(Integer.MAX_VALUE));
+                } else {
+                    // Array index: digits only
+                    int start = i;
+                    while (i < len && s.charAt(i) != ']') {
+                        char digitChar = s.charAt(i);
+                        if (!Character.isDigit(digitChar)) {
+                            throw new OverrideException(ReasonCode.PATH_INVALID, "Non-digit character in array index: " + raw);
+                        }
+                        i++;
+                    }
+                    if (i >= len || s.charAt(i) != ']') {
+                        throw new OverrideException(ReasonCode.PATH_INVALID, "Unterminated array index bracket in: " + raw);
+                    }
+                    String numStr = s.substring(start, i);
+                    i++; // skip ']'
+
+                    // Reject leading zero if multiple digits (e.g. 01)
+                    if (numStr.length() > 1 && numStr.startsWith("0")) {
+                        throw new OverrideException(ReasonCode.PATH_INVALID, "Leading zero not allowed in array index: " + numStr);
+                    }
+                    try {
+                        int idx = Integer.parseInt(numStr);
+                        if (idx < 0) {
+                            throw new OverrideException(ReasonCode.PATH_INVALID, "Negative array index not allowed: " + idx);
+                        }
+                        segList.add(new Segment(idx));
+                    } catch (NumberFormatException e) {
+                        throw new OverrideException(ReasonCode.INDEX_OUT_OF_RANGE, "Array index overflow: " + numStr);
+                    }
+                }
+            } else {
+                // Property name up to next '.' or '['
+                int start = i;
+                while (i < len && s.charAt(i) != '.' && s.charAt(i) != '[') {
+                    i++;
+                }
+                String propName = s.substring(start, i).trim();
+                if (propName.isEmpty()) {
+                    throw new OverrideException(ReasonCode.PATH_INVALID, "Empty property segment in path: " + raw);
+                }
+                segList.add(new Segment(propName));
             }
         }
 
         if (segList.isEmpty()) {
-            segList.add(new Segment(raw));
+            throw new OverrideException(ReasonCode.PATH_INVALID, "No valid segments parsed from path: " + raw);
         }
 
-        // Leaf name
         String leaf = raw;
-        for (int i = segList.size() - 1; i >= 0; i--) {
-            Segment s = segList.get(i);
-            if (!s.isArray() && s.getPropertyName() != null && !s.getPropertyName().isEmpty()) {
-                leaf = s.getPropertyName();
+        for (int k = segList.size() - 1; k >= 0; k--) {
+            Segment seg = segList.get(k);
+            if (!seg.isArray() && seg.getPropertyName() != null && !seg.getPropertyName().isEmpty()) {
+                leaf = seg.getPropertyName();
                 break;
             }
         }
 
-        return new ParamPath(raw, segList, true, leaf);
+        return new ParamPath(raw, segList, explicit, leaf);
     }
 
     public String getRawPath() {
@@ -181,15 +244,16 @@ public class ParamPath {
     }
 
     public String toJsonPointer() {
+        if (segments.isEmpty()) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder();
         for (Segment s : segments) {
             sb.append("/");
             if (s.isArray()) {
-                sb.append(s.getArrayIndex());
+                sb.append(s.getArrayIndex() == Integer.MAX_VALUE ? "-" : s.getArrayIndex());
             } else {
-                // JSON Pointer escaping: ~ -> ~0, / -> ~1
-                String name = s.getPropertyName();
-                sb.append(name.replace("~", "~0").replace("/", "~1"));
+                sb.append(s.getPropertyName().replace("~", "~0").replace("/", "~1"));
             }
         }
         return sb.toString();

@@ -109,6 +109,19 @@ public class OverrideEntry {
         this.reasonCode = reasonCode;
     }
 
+    public void setReasonCode(ReasonCode code) {
+        this.reasonCode = (code != null) ? code.name() : null;
+    }
+
+    public ReasonCode getReasonCodeEnum() {
+        if (reasonCode == null) return null;
+        try {
+            return ReasonCode.valueOf(reasonCode);
+        } catch (IllegalArgumentException e) {
+            return ReasonCode.INTERNAL_ERROR;
+        }
+    }
+
     public String getReason() {
         return reason;
     }

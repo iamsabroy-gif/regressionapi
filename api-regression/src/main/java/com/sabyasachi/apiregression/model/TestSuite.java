@@ -14,7 +14,16 @@ public class TestSuite {
     private Map<String, String> variables = new LinkedHashMap<>();
     private List<TestCase> testCases = new ArrayList<>();
     private String specPath;
+    private transient String filePath;
     private com.sabyasachi.apiregression.payload.OverrideOptions overrideOptions = new com.sabyasachi.apiregression.payload.OverrideOptions();
+
+    public String getFilePath() {
+        return filePath;
+    }
+
+    public void setFilePath(String filePath) {
+        this.filePath = filePath;
+    }
 
     public TestSuite() {
     }

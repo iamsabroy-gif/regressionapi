@@ -1,58 +1,101 @@
 package com.sabyasachi.apiregression.payload;
 
+import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.core.util.DefaultIndenter;
 import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class JsonTemplateCodec {
 
-    private static final String MASK_PREFIX = "__AGY_UNQUOTED_PH_";
-    private static final String MASK_SUFFIX = "__";
+    public static final String MASK_PREFIX = "__AGY_UNQUOTED_PH_";
+    public static final String MASK_SUFFIX = "__";
+    private static final AtomicInteger SENTINEL_COUNTER = new AtomicInteger(1000);
 
-    private final ObjectMapper mapper;
-    private final DefaultPrettyPrinter prettyPrinter;
-
-    public JsonTemplateCodec() {
-        this.mapper = new ObjectMapper();
-        this.mapper.setNodeFactory(JsonNodeFactory.withExactBigDecimals(true));
-        this.mapper.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
-        this.mapper.enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION.mappedFeature());
-
-        DefaultPrettyPrinter pp = new DefaultPrettyPrinter();
-        DefaultPrettyPrinter.Indenter indenter = new DefaultIndenter("  ", "\n");
-        pp.indentObjectsWith(indenter);
-        pp.indentArraysWith(indenter);
-        this.prettyPrinter = pp;
+    public enum BodyState {
+        ABSENT,
+        JSON,
+        NOT_JSON
     }
 
-    private static final JsonTemplateCodec DEFAULT_INSTANCE = new JsonTemplateCodec();
+    public static class ParsedBody {
+        private final BodyState state;
+        private final JsonNode rootNode;
+        private final Map<String, String> unquotedPlaceholders;
+        private final String failureReason;
+        private final String originalRaw;
 
-    public static ObjectNode readTree(String bodyTemplate) {
-        try {
-            return DEFAULT_INSTANCE.decode(bodyTemplate).getRootNode();
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to decode JSON template: " + e.getMessage(), e);
+        private ParsedBody(BodyState state, JsonNode rootNode, Map<String, String> unquotedPlaceholders, String failureReason, String originalRaw) {
+            this.state = state;
+            this.rootNode = rootNode;
+            this.unquotedPlaceholders = unquotedPlaceholders != null ? unquotedPlaceholders : new HashMap<>();
+            this.failureReason = failureReason;
+            this.originalRaw = originalRaw;
         }
-    }
 
-    public static String writeTree(JsonNode node, String originalTemplate) {
-        try {
-            DecodedTemplate decoded = DEFAULT_INSTANCE.decode(originalTemplate);
-            return DEFAULT_INSTANCE.encode((ObjectNode) node, decoded.getUnquotedPlaceholders());
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to encode JSON template: " + e.getMessage(), e);
+        public static ParsedBody absent(String raw) {
+            return new ParsedBody(BodyState.ABSENT, null, new HashMap<>(), null, raw);
+        }
+
+        public static ParsedBody json(JsonNode rootNode, Map<String, String> unquotedPlaceholders, String raw) {
+            return new ParsedBody(BodyState.JSON, rootNode, unquotedPlaceholders, null, raw);
+        }
+
+        public static ParsedBody json(JsonNode rootNode) {
+            return new ParsedBody(BodyState.JSON, rootNode, new HashMap<>(), null, "");
+        }
+
+        public static ParsedBody notJson(String reason, String raw) {
+            return new ParsedBody(BodyState.NOT_JSON, null, new HashMap<>(), reason, raw);
+        }
+
+        public BodyState getState() {
+            return state;
+        }
+
+        public boolean isAbsent() {
+            return state == BodyState.ABSENT;
+        }
+
+        public boolean isJson() {
+            return state == BodyState.JSON;
+        }
+
+        public boolean isNotJson() {
+            return state == BodyState.NOT_JSON;
+        }
+
+        public JsonNode getRootNode() {
+            return rootNode;
+        }
+
+        public ObjectNode getObjectNode() {
+            return (rootNode instanceof ObjectNode) ? (ObjectNode) rootNode : null;
+        }
+
+        public ArrayNode getArrayNode() {
+            return (rootNode instanceof ArrayNode) ? (ArrayNode) rootNode : null;
+        }
+
+        public Map<String, String> getUnquotedPlaceholders() {
+            return unquotedPlaceholders;
+        }
+
+        public String getFailureReason() {
+            return failureReason;
+        }
+
+        public String getOriginalRaw() {
+            return originalRaw;
         }
     }
 
@@ -74,23 +117,78 @@ public class JsonTemplateCodec {
         }
     }
 
-    public DecodedTemplate decode(String bodyTemplate) throws IOException {
+    private final ObjectMapper mapper;
+    private final DefaultPrettyPrinter prettyPrinter;
+
+    public JsonTemplateCodec() {
+        this.mapper = new ObjectMapper();
+        this.mapper.setNodeFactory(JsonNodeFactory.withExactBigDecimals(true));
+        this.mapper.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+        this.mapper.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
+
+        DefaultPrettyPrinter pp = new DefaultPrettyPrinter();
+        pp.indentArraysWith(DefaultIndenter.SYSTEM_LINEFEED_INSTANCE);
+        pp.indentObjectsWith(DefaultIndenter.SYSTEM_LINEFEED_INSTANCE);
+        this.prettyPrinter = pp;
+    }
+
+    public static boolean isSentinel(String text) {
+        return text != null && text.startsWith(MASK_PREFIX) && text.endsWith(MASK_SUFFIX);
+    }
+
+    public static String createSentinel(String placeholder) {
+        String name = placeholder.trim();
+        if (name.startsWith("{{") && name.endsWith("}}")) {
+            name = name.substring(2, name.length() - 2).trim();
+        }
+        return MASK_PREFIX + "RAW_" + name + "_" + SENTINEL_COUNTER.incrementAndGet() + MASK_SUFFIX;
+    }
+
+    public static String createSentinel(String varName, Map<String, String> unquotedPlaceholders) {
+        String sentinel = MASK_PREFIX + SENTINEL_COUNTER.incrementAndGet() + MASK_SUFFIX;
+        if (unquotedPlaceholders != null) {
+            unquotedPlaceholders.put(sentinel, varName);
+        }
+        return sentinel;
+    }
+
+    public ParsedBody parse(String bodyTemplate) {
         if (bodyTemplate == null || bodyTemplate.isBlank()) {
-            return new DecodedTemplate(mapper.createObjectNode(), new HashMap<>());
+            return ParsedBody.absent(bodyTemplate);
         }
 
         Map<String, String> unquotedMap = new HashMap<>();
         String maskedJson = maskUnquotedPlaceholders(bodyTemplate, unquotedMap);
 
-        JsonNode root = mapper.readTree(maskedJson);
-        if (!root.isObject()) {
-            throw new IllegalArgumentException("JSON template body must be a JSON object, but was: " + root.getNodeType());
+        try {
+            JsonNode root = mapper.readTree(maskedJson);
+            if (root.isObject() || root.isArray()) {
+                return ParsedBody.json(root, unquotedMap, bodyTemplate);
+            } else {
+                return ParsedBody.notJson("Root node is not an object or array: " + root.getNodeType(), bodyTemplate);
+            }
+        } catch (JsonParseException e) {
+            return ParsedBody.notJson("Invalid JSON syntax: " + e.getOriginalMessage(), bodyTemplate);
+        } catch (Exception e) {
+            return ParsedBody.notJson(e.getMessage(), bodyTemplate);
         }
-
-        return new DecodedTemplate((ObjectNode) root, unquotedMap);
     }
 
-    public String encode(ObjectNode rootNode, Map<String, String> unquotedPlaceholders) throws IOException {
+    public DecodedTemplate decode(String bodyTemplate) throws IOException {
+        ParsedBody pb = parse(bodyTemplate);
+        if (pb.isAbsent()) {
+            return new DecodedTemplate(mapper.createObjectNode(), new HashMap<>());
+        }
+        if (pb.isNotJson()) {
+            throw new OverrideException(ReasonCode.BODY_NOT_JSON, "Failed to parse JSON body template: " + pb.getFailureReason());
+        }
+        if (pb.getObjectNode() != null) {
+            return new DecodedTemplate(pb.getObjectNode(), pb.getUnquotedPlaceholders());
+        }
+        throw new OverrideException(ReasonCode.BODY_NOT_JSON, "Expected JSON object at root, but was array.");
+    }
+
+    public String encode(JsonNode rootNode, Map<String, String> unquotedPlaceholders) throws IOException {
         if (rootNode == null) {
             return "";
         }
@@ -106,7 +204,43 @@ public class JsonTemplateCodec {
             }
         }
 
-        return json;
+        // Also restore raw sentinels created without map: e.g. MASK_PREFIX + "RAW_" + name + "_" + id + MASK_SUFFIX
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"" + MASK_PREFIX + "RAW_(.+?)_\\d+" + MASK_SUFFIX + "\"").matcher(json);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            m.appendReplacement(sb, "{{" + java.util.regex.Matcher.quoteReplacement(m.group(1)) + "}}");
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    public String encode(ObjectNode rootNode, Map<String, String> unquotedPlaceholders) throws IOException {
+        return encode((JsonNode) rootNode, unquotedPlaceholders);
+    }
+
+    private static final JsonTemplateCodec DEFAULT_INSTANCE = new JsonTemplateCodec();
+
+    public static JsonNode readTree(String json) {
+        if (json == null) return null;
+        try {
+            ParsedBody pb = DEFAULT_INSTANCE.parse(json);
+            return pb.getRootNode();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to read JSON tree: " + e.getMessage(), e);
+        }
+    }
+
+    public static String writeTree(JsonNode root, String originalTemplate) {
+        try {
+            Map<String, String> unquoted = Collections.emptyMap();
+            if (originalTemplate != null && !originalTemplate.isBlank()) {
+                ParsedBody pb = DEFAULT_INSTANCE.parse(originalTemplate);
+                unquoted = pb.getUnquotedPlaceholders();
+            }
+            return DEFAULT_INSTANCE.encode(root, unquoted);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to write JSON tree: " + e.getMessage(), e);
+        }
     }
 
     public ObjectMapper getMapper() {
@@ -137,7 +271,7 @@ public class JsonTemplateCodec {
                     insideString = true;
                     sb.append(c);
                 } else if (c == '{' && i + 1 < len && input.charAt(i + 1) == '{') {
-                    // Start of placeholder outside of double quotes!
+                    // Start of placeholder outside of double quotes
                     int end = input.indexOf("}}", i + 2);
                     if (end != -1) {
                         String varName = input.substring(i + 2, end).trim();

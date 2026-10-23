@@ -1,0 +1,19 @@
+openapi: 3.0.3
+info:
+  title: Hostile Evil Pattern Spec
+  version: 1.0.0
+paths:
+  /data:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vulnerable:
+                  type: string
+                  pattern: '^(.*a){20}$'
+      responses:
+        '200':
+          description: OK

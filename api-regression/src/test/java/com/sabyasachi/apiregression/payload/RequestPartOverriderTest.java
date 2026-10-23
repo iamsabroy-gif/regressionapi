@@ -27,7 +27,8 @@ public class RequestPartOverriderTest {
 
         // 3. Repeated query param throws error
         String badUrl = "https://api.example.com/items?tag=a&tag=b";
-        assertThrows(IllegalArgumentException.class, () -> RequestPartOverrider.overrideQueryParam(badUrl, "tag", "c"));
+        OverrideException ex = assertThrows(OverrideException.class, () -> RequestPartOverrider.overrideQueryParam(badUrl, "tag", "c"));
+        assertEquals(ReasonCode.QUERY_REPEATED, ex.getReasonCode());
     }
 
     @Test

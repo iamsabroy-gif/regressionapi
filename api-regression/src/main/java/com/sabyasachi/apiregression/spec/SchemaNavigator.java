@@ -4,8 +4,8 @@ import com.sabyasachi.apiregression.payload.ParamPath;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.media.ArraySchema;
 import io.swagger.v3.oas.models.media.MediaType;
-import io.swagger.v3.oas.models.parameters.RequestBody;
 import io.swagger.v3.oas.models.media.Schema;
+import io.swagger.v3.oas.models.parameters.RequestBody;
 
 import java.util.*;
 
@@ -39,6 +39,61 @@ public class SchemaNavigator {
 
         public boolean isPassesThroughArray() {
             return passesThroughArray;
+        }
+    }
+
+    public static class Resolution {
+        public enum Status {
+            FOUND_IN_PAYLOAD,
+            DECLARED_IN_SPEC,
+            UNDECLARED,
+            NO_SCHEMA
+        }
+
+        private final Status status;
+        private final Schema schema;
+        private final String specPointer;
+        private final List<String> candidates;
+        private final boolean additionalPropertiesAllowed;
+
+        public Resolution(Status status, Schema schema, String specPointer, List<String> candidates, boolean additionalPropertiesAllowed) {
+            this.status = status;
+            this.schema = schema;
+            this.specPointer = specPointer;
+            this.candidates = candidates != null ? candidates : Collections.emptyList();
+            this.additionalPropertiesAllowed = additionalPropertiesAllowed;
+        }
+
+        public static Resolution noSchema() {
+            return new Resolution(Status.NO_SCHEMA, null, null, Collections.emptyList(), false);
+        }
+
+        public static Resolution declaredInSpec(Schema schema, String specPointer) {
+            return new Resolution(Status.DECLARED_IN_SPEC, schema, specPointer, Collections.emptyList(), false);
+        }
+
+        public static Resolution undeclared(List<String> candidates, boolean additionalPropertiesAllowed) {
+            return new Resolution(Status.UNDECLARED, null, null, candidates, additionalPropertiesAllowed);
+        }
+
+        public Status getStatus() {
+            return status;
+        }
+
+        public Schema getSchema() {
+            return schema;
+        }
+
+        public String getSpecPointer() {
+            return specPointer;
+        }
+
+        public List<String> getCandidates() {
+            return candidates;
+        }
+
+        public boolean isAdditionalPropertiesAllowed() {
+            return additionalPropertiesAllowed;
         }
     }
 
@@ -159,30 +214,91 @@ public class SchemaNavigator {
         }
     }
 
-    public Schema navigateExplicitPath(Schema rootSchema, ParamPath path) {
-        if (rootSchema == null || path == null) return null;
-        Schema current = resolveSchema(rootSchema);
+    public Resolution resolveExplicitPath(Schema rootSchema, ParamPath path) {
+        if (rootSchema == null) {
+            return Resolution.noSchema();
+        }
+        if (path == null || path.getSegments().isEmpty()) {
+            return Resolution.declaredInSpec(resolveSchema(rootSchema), "#/requestBody");
+        }
 
-        for (ParamPath.Segment seg : path.getSegments()) {
-            if (current == null) return null;
+        Schema current = resolveSchema(rootSchema);
+        StringBuilder specPointer = new StringBuilder("#/requestBody");
+
+        List<ParamPath.Segment> segments = path.getSegments();
+        for (int i = 0; i < segments.size(); i++) {
+            ParamPath.Segment seg = segments.get(i);
+            if (current == null) {
+                return Resolution.undeclared(Collections.emptyList(), false);
+            }
 
             if (seg.isArray()) {
                 if (current instanceof ArraySchema) {
                     current = resolveSchema(((ArraySchema) current).getItems());
+                    specPointer.append("/items");
                 } else {
-                    return null;
+                    return Resolution.undeclared(Collections.emptyList(), false);
                 }
             } else {
                 Map<String, Schema> props = getAllProperties(current);
-                if (props != null && props.containsKey(seg.getPropertyName())) {
-                    current = resolveSchema(props.get(seg.getPropertyName()));
+                String propName = seg.getPropertyName();
+                if (props.containsKey(propName)) {
+                    current = resolveSchema(props.get(propName));
+                    specPointer.append("/properties/").append(propName);
                 } else {
-                    return null;
+                    // Check did-you-mean suggestions from sibling properties
+                    List<String> didYouMean = findDidYouMean(propName, props.keySet());
+                    boolean additionalProps = hasAdditionalProperties(current);
+                    return Resolution.undeclared(didYouMean, additionalProps);
                 }
             }
         }
 
-        return current;
+        return Resolution.declaredInSpec(current, specPointer.toString());
+    }
+
+    public Schema navigateExplicitPath(Schema rootSchema, ParamPath path) {
+        Resolution res = resolveExplicitPath(rootSchema, path);
+        return (res.getStatus() == Resolution.Status.DECLARED_IN_SPEC) ? res.getSchema() : null;
+    }
+
+    private boolean hasAdditionalProperties(Schema schema) {
+        if (schema == null) return false;
+        Object addProps = schema.getAdditionalProperties();
+        if (addProps instanceof Boolean) {
+            return (Boolean) addProps;
+        }
+        return (addProps instanceof Schema);
+    }
+
+    private List<String> findDidYouMean(String target, Set<String> candidates) {
+        List<String> matches = new ArrayList<>();
+        if (target == null || candidates == null) return matches;
+
+        for (String cand : candidates) {
+            if (cand.equalsIgnoreCase(target)) {
+                matches.add(cand);
+            } else if (levenshteinDistance(target.toLowerCase(), cand.toLowerCase()) <= 2) {
+                matches.add(cand);
+            }
+            if (matches.size() >= 5) break;
+        }
+        return matches;
+    }
+
+    private static int levenshteinDistance(String s1, String s2) {
+        int[] prev = new int[s2.length() + 1];
+        for (int j = 0; j <= s2.length(); j++) prev[j] = j;
+        for (int i = 1; i <= s1.length(); i++) {
+            int[] curr = new int[s2.length() + 1];
+            curr[0] = i;
+            for (int j = 1; j <= s2.length(); j++) {
+                int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
+                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            }
+            prev = curr;
+        }
+        return prev[s2.length()];
     }
 
     public Map<String, Schema> getAllProperties(Schema schema) {

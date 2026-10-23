@@ -1,6 +1,7 @@
 package com.sabyasachi.apiregression.payload;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sabyasachi.apiregression.importer.ExcelParameterImporter;
 import com.sabyasachi.apiregression.importer.ParamRow;
@@ -13,8 +14,11 @@ import com.sabyasachi.apiregression.spec.ConstraintValidator;
 import com.sabyasachi.apiregression.spec.ProviderSpecLoader;
 import com.sabyasachi.apiregression.spec.SchemaNavigator;
 import com.sabyasachi.apiregression.spec.SpecIndex;
+import io.swagger.v3.oas.models.media.ArraySchema;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -24,6 +28,8 @@ import java.util.*;
 
 @SuppressWarnings("rawtypes")
 public class ParameterOverrideService {
+
+    private static final Logger log = LoggerFactory.getLogger(ParameterOverrideService.class);
 
     private final ExcelParameterImporter excelImporter;
     private final ProviderSpecLoader specLoader;
@@ -62,10 +68,13 @@ public class ParameterOverrideService {
         report.setDryRun(isDryRun);
         report.setCreatedAt(Instant.now());
 
-        // 1. Load Spec if provided or set on suite
+        // 1. Resolve Spec path relative to suite file if needed
         Path effectiveSpecPath = specPath;
         if (effectiveSpecPath == null && suite.getSpecPath() != null && !suite.getSpecPath().isBlank()) {
             effectiveSpecPath = Path.of(suite.getSpecPath());
+            if (!effectiveSpecPath.isAbsolute() && suite.getFilePath() != null) {
+                effectiveSpecPath = Path.of(suite.getFilePath()).getParent().resolve(effectiveSpecPath);
+            }
         }
 
         SpecIndex specIndex = null;
@@ -86,16 +95,38 @@ public class ParameterOverrideService {
 
         // 2. Parse Excel Workbook
         List<SheetParams> parsedSheets = excelImporter.parse(xlsxPath, options.isSkipHiddenSheets(), options.getMaxRowsPerSheet());
-        Set<TestCase> targetedInThisWorkbook = new HashSet<>();
+        // Identity-based conflict set (D2)
+        Set<TestCase> targetedInThisWorkbook = Collections.newSetFromMap(new IdentityHashMap<>());
         TypeCoercer coercer = new TypeCoercer(templateCodec.getMapper());
 
         for (SheetParams sheet : parsedSheets) {
             SheetSummary summary = new SheetSummary(sheet.getSheetName(), sheet.getTarget());
             report.getSheets().add(summary);
 
-            // Match TestCase
-            MatchResult matchResult = matchTestCase(suite, sheet.getTarget(), specIndex);
-            if (matchResult.matchCount == 0) {
+            // Sheet-level warnings (e.g. ROW_CAP_EXCEEDED)
+            boolean rowCapExceeded = false;
+            for (String sw : sheet.getSheetWarnings()) {
+                if (sw.startsWith("ROW_CAP_EXCEEDED")) {
+                    rowCapExceeded = true;
+                    summary.setStatus("NOT_APPLIED");
+                    summary.setErrors(1);
+                    OverrideEntry entry = new OverrideEntry();
+                    entry.setSheet(sheet.getSheetName());
+                    entry.setRow(1);
+                    entry.setParameter("sheet");
+                    entry.setAction(OverrideAction.ERROR);
+                    entry.setReasonCode(ReasonCode.ROW_CAP_EXCEEDED);
+                    entry.setReason(sw);
+                    report.getEntries().add(entry);
+                }
+            }
+            if (rowCapExceeded) {
+                continue;
+            }
+
+            // Match TestCase using TargetMatcher (D7, M1)
+            TargetMatcher.MatchResult matchResult = TargetMatcher.match(suite, sheet.getTarget(), specIndex);
+            if (matchResult.getMatchCount() == 0) {
                 summary.setStatus("UNMATCHED");
                 summary.setErrors(1);
                 OverrideEntry entry = new OverrideEntry();
@@ -103,11 +134,11 @@ public class ParameterOverrideService {
                 entry.setRow(1);
                 entry.setParameter("target");
                 entry.setAction(OverrideAction.ERROR);
-                entry.setReasonCode("UNMATCHED_TARGET");
+                entry.setReasonCode(ReasonCode.UNMATCHED);
                 entry.setReason("No TestCase in the suite matches target: '" + sheet.getTarget() + "'");
                 report.getEntries().add(entry);
                 continue;
-            } else if (matchResult.matchCount > 1) {
+            } else if (matchResult.getMatchCount() > 1) {
                 summary.setStatus("AMBIGUOUS_TARGET");
                 summary.setErrors(1);
                 OverrideEntry entry = new OverrideEntry();
@@ -115,18 +146,18 @@ public class ParameterOverrideService {
                 entry.setRow(1);
                 entry.setParameter("target");
                 entry.setAction(OverrideAction.ERROR);
-                entry.setReasonCode("AMBIGUOUS_TARGET");
+                entry.setReasonCode(ReasonCode.AMBIGUOUS_TARGET);
                 entry.setReason("Multiple TestCases match target: '" + sheet.getTarget() + "'");
-                entry.setCandidates(matchResult.candidateNames);
+                entry.setCandidates(matchResult.getCandidateNames());
                 report.getEntries().add(entry);
                 continue;
             }
 
-            TestCase targetTc = matchResult.testCase;
+            TestCase targetTc = matchResult.getTestCase();
             summary.setTargetTestCase(targetTc.getName());
-            summary.setMatchedBy(matchResult.matchedBy);
+            summary.setMatchedBy(matchResult.getMatchedBy());
 
-            // Check duplicate sheet targeting same TestCase
+            // Check duplicate sheet targeting same TestCase (D2)
             if (targetedInThisWorkbook.contains(targetTc)) {
                 summary.setStatus("CONFLICT");
                 summary.setErrors(1);
@@ -135,7 +166,7 @@ public class ParameterOverrideService {
                 entry.setRow(1);
                 entry.setParameter("target");
                 entry.setAction(OverrideAction.ERROR);
-                entry.setReasonCode("CONFLICT");
+                entry.setReasonCode(ReasonCode.CONFLICT);
                 entry.setReason("Another sheet in this workbook already targets TestCase: '" + targetTc.getName() + "'");
                 report.getEntries().add(entry);
                 continue;
@@ -151,29 +182,15 @@ public class ParameterOverrideService {
                 baseline = RequestSnapshot.from(targetTc);
             }
 
-            // Setup working copies
+            // D1 WorkingRequest
             String workingUrl = baseline.getUrl();
             Map<String, String> workingHeaders = new LinkedHashMap<>(baseline.getHeaders());
             String workingBody = baseline.getBodyTemplate();
 
-            // Decode body template
-            JsonTemplateCodec.DecodedTemplate decodedTemplate = null;
-            ObjectNode rootBodyNode = null;
-            try {
-                decodedTemplate = templateCodec.decode(workingBody);
-                rootBodyNode = decodedTemplate.getRootNode();
-            } catch (Exception e) {
-                summary.setErrors(summary.getErrors() + 1);
-                OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
-                entry.setRow(1);
-                entry.setParameter("body");
-                entry.setAction(OverrideAction.ERROR);
-                entry.setReasonCode("BODY_NOT_JSON");
-                entry.setReason("Failed to parse JSON body template: " + e.getMessage());
-                report.getEntries().add(entry);
-                continue;
-            }
+            // Lazy body parsing (H5)
+            JsonTemplateCodec.ParsedBody parsedBody = templateCodec.parse(workingBody);
+            JsonNode workingBodyNode = parsedBody.isJson() ? parsedBody.getRootNode() : null;
+            boolean bodyModifiedOrAdded = false;
 
             // Find spec operation
             SpecIndex.OperationMatch opMatch = null;
@@ -183,6 +200,10 @@ public class ParameterOverrideService {
                     opMatch = specIndex.matchOperation(targetTc.getOperationId(), targetTc.getMethod(), workingUrl);
                     if (opMatch != null && opMatch.getOperation() != null && schemaNavigator != null) {
                         requestBodySchema = schemaNavigator.extractJsonRequestBodySchema(opMatch.getOperation().getRequestBody());
+                    }
+                } catch (OverrideException oe) {
+                    if (oe.getReasonCode() == ReasonCode.AMBIGUOUS_OPERATION) {
+                        summary.addSheetWarning("Ambiguous spec operation matching: " + oe.getMessage());
                     }
                 } catch (Exception ignored) {
                 }
@@ -199,7 +220,7 @@ public class ParameterOverrideService {
 
                 if (!row.isEnabled()) {
                     entry.setAction(OverrideAction.SKIPPED);
-                    entry.setReasonCode("DISABLED");
+                    entry.setReasonCode(ReasonCode.DISABLED);
                     entry.setReason("Row is disabled in sheet.");
                     summary.setSkipped(summary.getSkipped() + 1);
                     report.getEntries().add(entry);
@@ -208,9 +229,27 @@ public class ParameterOverrideService {
 
                 if (row.getRawValue() == null && "BLANK".equalsIgnoreCase(row.getCellKind())) {
                     entry.setAction(OverrideAction.SKIPPED);
-                    entry.setReasonCode("BLANK");
+                    entry.setReasonCode(ReasonCode.BLANK);
                     entry.setReason("Cell is blank; field left as imported.");
                     summary.setSkipped(summary.getSkipped() + 1);
+                    report.getEntries().add(entry);
+                    continue;
+                }
+
+                // H3: Refuse to coerce any row whose cellKind is an error kind!
+                if (row.getCellKindEnum() != null && row.getCellKindEnum().isErrorKind()) {
+                    entry.setAction(OverrideAction.ERROR);
+                    if (row.getCellKindEnum() == ParamRow.CellKind.ERROR) {
+                        entry.setReasonCode(ReasonCode.CELL_ERROR);
+                        entry.setReason("Cell formula or value contains an unresolvable error.");
+                    } else if (row.getCellKindEnum() == ParamRow.CellKind.NO_CACHE) {
+                        entry.setReasonCode(ReasonCode.FORMULA_NO_CACHE);
+                        entry.setReason("Formula cell has no cached result in workbook.");
+                    } else if (row.getCellKindEnum() == ParamRow.CellKind.TOO_PRECISE) {
+                        entry.setReasonCode(ReasonCode.NUMBER_PRECISION_LOSS);
+                        entry.setReason("Numeric value has 15+ digits and loses precision. Format cell as Text in Excel.");
+                    }
+                    summary.setErrors(summary.getErrors() + 1);
                     report.getEntries().add(entry);
                     continue;
                 }
@@ -241,25 +280,62 @@ public class ParameterOverrideService {
                     entry.setLocation(targetLocation);
 
                     if (targetLocation == ParamLocation.BODY) {
-                        processBodyOverride(row, paramPath, rootBodyNode, requestBodySchema, schemaNavigator, coercer, options, entry, summary);
+                        // Check body state per H5
+                        if (parsedBody.isNotJson()) {
+                            throw new OverrideException(ReasonCode.BODY_NOT_JSON,
+                                    "JSON body template is invalid: " + parsedBody.getFailureReason());
+                        }
+
+                        if (parsedBody.isAbsent()) {
+                            if (requestBodySchema != null) {
+                                // Start from empty object or array
+                                workingBodyNode = (requestBodySchema instanceof ArraySchema) ?
+                                        templateCodec.getMapper().createArrayNode() : templateCodec.getMapper().createObjectNode();
+                                parsedBody = JsonTemplateCodec.ParsedBody.json(workingBodyNode);
+                            } else {
+                                String method = targetTc.getMethod() != null ? targetTc.getMethod().toUpperCase() : "GET";
+                                if ("GET".equals(method) || "HEAD".equals(method) || "DELETE".equals(method)) {
+                                    throw new OverrideException(ReasonCode.BODY_NOT_APPLICABLE,
+                                            "Body overrides are not applicable to " + method + " request without requestBody in spec.");
+                                } else {
+                                    throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                                            "Body template is absent and spec was unavailable for requestBody gap-fill.");
+                                }
+                            }
+                        }
+
+                        // Apply on row-scoped deep copy (D1 / H6)
+                        JsonNode rowWorkingCopy = workingBodyNode.deepCopy();
+                        processBodyOverride(row, paramPath, rowWorkingCopy, requestBodySchema, schemaNavigator, coercer, options, entry, summary);
+
+                        // If successful, promote row working copy
+                        workingBodyNode = rowWorkingCopy;
+                        bodyModifiedOrAdded = true;
+
                     } else if (targetLocation == ParamLocation.QUERY) {
+                        processQueryOverride(row, paramPath, workingUrl, opMatch, coercer, options, entry, summary);
                         RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overrideQueryParam(workingUrl, paramPath.getLeafName(), row.getRawValue());
                         workingUrl = partRes.getUpdatedUrl();
                         entry.setAction(partRes.isAdded() ? OverrideAction.ADDED : OverrideAction.MODIFIED);
                         entry.setResolvedPath("query." + paramPath.getLeafName());
                         if (partRes.isAdded()) summary.setAdded(summary.getAdded() + 1);
                         else summary.setModified(summary.getModified() + 1);
+
                     } else if (targetLocation == ParamLocation.HEADER) {
+                        processHeaderOverride(row, paramPath, workingHeaders, opMatch, coercer, options, entry, summary);
                         RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overrideHeader(workingHeaders, paramPath.getLeafName(), row.getRawValue());
                         workingHeaders = partRes.getUpdatedHeaders();
                         entry.setAction(partRes.isAdded() ? OverrideAction.ADDED : OverrideAction.MODIFIED);
                         entry.setResolvedPath("header." + paramPath.getLeafName());
                         if (partRes.isAdded()) summary.setAdded(summary.getAdded() + 1);
                         else summary.setModified(summary.getModified() + 1);
+
                     } else if (targetLocation == ParamLocation.PATH) {
                         if (opMatch == null) {
-                            throw new IllegalArgumentException("Path parameter override requires spec path template, but spec was unavailable or operation not found.");
+                            throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                                    "Path parameter override requires spec path template, but spec was unavailable or operation not found.");
                         }
+                        processPathOverride(row, paramPath, workingUrl, opMatch, coercer, options, entry, summary);
                         RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overridePathParam(workingUrl, opMatch.getPathTemplate(), paramPath.getLeafName(), row.getRawValue());
                         workingUrl = partRes.getUpdatedUrl();
                         entry.setAction(OverrideAction.MODIFIED);
@@ -267,10 +343,19 @@ public class ParameterOverrideService {
                         summary.setModified(summary.getModified() + 1);
                     }
 
-                } catch (Exception ex) {
+                } catch (OverrideException ex) {
                     entry.setAction(OverrideAction.ERROR);
-                    entry.setReasonCode("OVERRIDE_FAILED");
+                    entry.setReasonCode(ex.getReasonCode());
                     entry.setReason(ex.getMessage());
+                    if (ex.getCandidates() != null && !ex.getCandidates().isEmpty()) {
+                        entry.setCandidates(ex.getCandidates());
+                    }
+                    summary.setErrors(summary.getErrors() + 1);
+                } catch (Exception ex) {
+                    log.error("Internal error processing row " + row.getRow() + " in sheet '" + sheet.getSheetName() + "'", ex);
+                    entry.setAction(OverrideAction.ERROR);
+                    entry.setReasonCode(ReasonCode.INTERNAL_ERROR);
+                    entry.setReason(ex.getClass().getSimpleName() + ": " + ex.getMessage());
                     summary.setErrors(summary.getErrors() + 1);
                 }
 
@@ -284,13 +369,19 @@ public class ParameterOverrideService {
                 summary.setStatus("APPLIED");
             }
 
-            // If not dry-run and (no errors or applyWithErrors allowed): Apply to target TestCase
+            // D1 Commit Step: apply to target TestCase
             if (!isDryRun && (summary.getErrors() == 0 || options.isApplyWithErrors())) {
                 try {
-                    String updatedBody = templateCodec.encode(rootBodyNode, decodedTemplate.getUnquotedPlaceholders());
                     targetTc.setUrl(workingUrl);
                     targetTc.setHeaders(workingHeaders);
-                    targetTc.setBodyTemplate(updatedBody);
+                    if (bodyModifiedOrAdded && workingBodyNode != null) {
+                        String updatedBody = templateCodec.encode(workingBodyNode, parsedBody.getUnquotedPlaceholders());
+                        targetTc.setBodyTemplate(updatedBody);
+                    }
+
+                    if ("OPERATION_ID".equals(matchResult.getMatchedBy()) && targetTc.getOperationId() == null) {
+                        targetTc.setOperationId(sheet.getTarget().trim());
+                    }
 
                     OverrideProvenance prov = new OverrideProvenance();
                     prov.setWorkbookFile(xlsxPath.getFileName().toString());
@@ -304,6 +395,7 @@ public class ParameterOverrideService {
                     prov.setWarnings(summary.getWarnings());
                     targetTc.setLastOverride(prov);
                 } catch (Exception ex) {
+                    log.error("Failed to commit WorkingRequest to TestCase", ex);
                     summary.setStatus("ERROR");
                     summary.setErrors(summary.getErrors() + 1);
                 }
@@ -313,7 +405,95 @@ public class ParameterOverrideService {
         return report;
     }
 
-    private void processBodyOverride(ParamRow row, ParamPath paramPath, ObjectNode rootNode,
+    private void processQueryOverride(ParamRow row, ParamPath paramPath, String currentUrl,
+                                      SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
+                                      OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+        String val = row.getRawValue();
+        if ("<null>".equalsIgnoreCase(val != null ? val.trim() : "")) {
+            throw new OverrideException(ReasonCode.NULL_NOT_ALLOWED_HERE,
+                    "Null value is not allowed for query parameter '" + paramPath.getLeafName() + "'.");
+        }
+
+        Parameter specParam = (opMatch != null) ? opMatch.findParameter(paramPath.getLeafName(), "query") : null;
+        if (opMatch != null && specParam == null) {
+            // Check if present in current URL
+            boolean presentInUrl = currentUrl != null && currentUrl.contains(paramPath.getLeafName() + "=");
+            if (!presentInUrl) {
+                throw new OverrideException(ReasonCode.NOT_IN_SPEC,
+                        "Query parameter '" + paramPath.getLeafName() + "' is not declared in spec for operation.");
+            }
+        }
+
+        if (specParam != null && specParam.getSchema() != null) {
+            validateParamSchema(specParam.getSchema(), val, coercer, options, entry, summary);
+        }
+    }
+
+    private void processHeaderOverride(ParamRow row, ParamPath paramPath, Map<String, String> headers,
+                                       SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
+                                       OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+        String val = row.getRawValue();
+        if ("<null>".equalsIgnoreCase(val != null ? val.trim() : "")) {
+            throw new OverrideException(ReasonCode.NULL_NOT_ALLOWED_HERE,
+                    "Null value is not allowed for header '" + paramPath.getLeafName() + "'.");
+        }
+
+        Parameter specParam = (opMatch != null) ? opMatch.findParameter(paramPath.getLeafName(), "header") : null;
+        if (opMatch != null && specParam == null) {
+            boolean present = false;
+            if (headers != null) {
+                for (String k : headers.keySet()) {
+                    if (k.equalsIgnoreCase(paramPath.getLeafName())) {
+                        present = true;
+                        break;
+                    }
+                }
+            }
+            if (!present) {
+                throw new OverrideException(ReasonCode.NOT_IN_SPEC,
+                        "Header '" + paramPath.getLeafName() + "' is not declared in spec for operation.");
+            }
+        }
+
+        if (specParam != null && specParam.getSchema() != null) {
+            validateParamSchema(specParam.getSchema(), val, coercer, options, entry, summary);
+        }
+    }
+
+    private void processPathOverride(ParamRow row, ParamPath paramPath, String currentUrl,
+                                     SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
+                                     OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+        String val = row.getRawValue();
+        if ("<null>".equalsIgnoreCase(val != null ? val.trim() : "")) {
+            throw new OverrideException(ReasonCode.NULL_NOT_ALLOWED_HERE,
+                    "Null value is not allowed for path parameter '" + paramPath.getLeafName() + "'.");
+        }
+
+        Parameter specParam = (opMatch != null) ? opMatch.findParameter(paramPath.getLeafName(), "path") : null;
+        if (specParam != null && specParam.getSchema() != null) {
+            validateParamSchema(specParam.getSchema(), val, coercer, options, entry, summary);
+        }
+    }
+
+    private void validateParamSchema(Schema paramSchema, String rawValue, TypeCoercer coercer,
+                                     OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+        if (rawValue == null || rawValue.contains("{{")) return;
+        String val = "<empty>".equalsIgnoreCase(rawValue.trim()) ? "" : rawValue;
+        List<String> warnings = new ArrayList<>();
+        TypeCoercer.CoercionResult cres = coercer.coerce(val, null, paramSchema.getType(), paramSchema.getFormat(), null, null, warnings);
+        entry.getWarnings().addAll(cres.getWarnings());
+
+        ConstraintValidator.ValidationResult vres = ConstraintValidator.validate(paramSchema, cres.getNode(), val, options.getConstraintPolicy(), false);
+        if (!vres.isValid()) {
+            throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT, vres.getErrorMessage());
+        }
+        if (vres.getWarningMessage() != null) {
+            entry.addWarning(vres.getWarningMessage());
+            summary.setWarnings(summary.getWarnings() + 1);
+        }
+    }
+
+    private void processBodyOverride(ParamRow row, ParamPath paramPath, JsonNode rootNode,
                                      Schema requestBodySchema, SchemaNavigator schemaNavigator,
                                      TypeCoercer coercer, OverrideOptions options,
                                      OverrideEntry entry, SheetSummary summary) {
@@ -327,46 +507,29 @@ public class ParameterOverrideService {
             if (bodyCandidates.size() == 1) {
                 effectivePath = ParamPath.parse(bodyCandidates.get(0));
             } else if (bodyCandidates.size() > 1) {
-                entry.setAction(OverrideAction.ERROR);
-                entry.setReasonCode("AMBIGUOUS_PROPERTY");
-                entry.setReason("Multiple fields in JSON payload match bare name '" + paramPath.getLeafName() + "'");
-                entry.setCandidates(bodyCandidates);
-                summary.setErrors(summary.getErrors() + 1);
-                return;
+                throw new OverrideException(ReasonCode.AMBIGUOUS,
+                        "Multiple fields in JSON payload match bare name '" + paramPath.getLeafName() + "'", bodyCandidates);
             } else {
                 // Not in payload -> look up in spec!
                 if (schemaNavigator == null || requestBodySchema == null) {
-                    entry.setAction(OverrideAction.ERROR);
-                    entry.setReasonCode("SPEC_UNAVAILABLE");
-                    entry.setReason("Field '" + paramPath.getLeafName() + "' is not present in payload and provider spec was not available for gap-fill.");
-                    summary.setErrors(summary.getErrors() + 1);
-                    return;
+                    throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                            "Field '" + paramPath.getLeafName() + "' is not present in payload and provider spec was not available for gap-fill.");
                 }
 
                 List<SchemaNavigator.ResolvedField> specCandidates = schemaNavigator.findSchemaPathsForLeaf(requestBodySchema, paramPath.getLeafName());
                 if (specCandidates.isEmpty()) {
-                    entry.setAction(OverrideAction.ERROR);
-                    entry.setReasonCode("NOT_IN_SPEC");
-                    entry.setReason("Field '" + paramPath.getLeafName() + "' is neither in the payload nor declared in the provider OpenAPI spec.");
-                    summary.setErrors(summary.getErrors() + 1);
-                    return;
+                    throw new OverrideException(ReasonCode.NOT_IN_SPEC,
+                            "Field '" + paramPath.getLeafName() + "' is neither in the payload nor declared in the provider OpenAPI spec.");
                 } else if (specCandidates.size() > 1) {
-                    entry.setAction(OverrideAction.ERROR);
-                    entry.setReasonCode("AMBIGUOUS_SPEC_PROPERTY");
-                    entry.setReason("Field '" + paramPath.getLeafName() + "' matches multiple schema locations in provider spec.");
                     List<String> candList = new ArrayList<>();
                     for (var sc : specCandidates) candList.add(sc.getJsonPointer());
-                    entry.setCandidates(candList);
-                    summary.setErrors(summary.getErrors() + 1);
-                    return;
+                    throw new OverrideException(ReasonCode.AMBIGUOUS,
+                            "Field '" + paramPath.getLeafName() + "' matches multiple schema locations in provider spec.", candList);
                 } else {
                     SchemaNavigator.ResolvedField rf = specCandidates.get(0);
                     if (rf.isPassesThroughArray()) {
-                        entry.setAction(OverrideAction.ERROR);
-                        entry.setReasonCode("NEEDS_INDEX");
-                        entry.setReason("Field '" + paramPath.getLeafName() + "' is inside an array in spec schema. Please specify an array index, e.g. " + rf.getJsonPointer().replace("[*]", "[0]"));
-                        summary.setErrors(summary.getErrors() + 1);
-                        return;
+                        throw new OverrideException(ReasonCode.NEEDS_INDEX,
+                                "Field '" + paramPath.getLeafName() + "' is inside an array in spec schema. Please specify an array index, e.g. " + rf.getJsonPointer().replace("[*]", "[0]"));
                     }
                     effectivePath = ParamPath.parse(rf.getJsonPointer());
                     targetPropSchema = rf.getSchema();
@@ -382,12 +545,37 @@ public class ParameterOverrideService {
         JsonNode existingNode = PayloadOverrider.findExistingNode(rootNode, effectivePath);
         entry.setOldValue(existingNode);
 
-        // If explicit path and not in payload, check spec for type & validation
-        if (existingNode == null && targetPropSchema == null && schemaNavigator != null && requestBodySchema != null) {
-            targetPropSchema = schemaNavigator.navigateExplicitPath(requestBodySchema, effectivePath);
+        // 3. H1 Resolution Policy: If explicit path and not in payload
+        if (existingNode == null) {
+            if (schemaNavigator == null || requestBodySchema == null) {
+                throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                        "Field '" + effectivePath + "' is not in payload and provider spec is unavailable for gap-fill.");
+            }
+
+            SchemaNavigator.Resolution resolution = schemaNavigator.resolveExplicitPath(requestBodySchema, effectivePath);
+            if (resolution.getStatus() == SchemaNavigator.Resolution.Status.NO_SCHEMA) {
+                throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
+                        "Field '" + effectivePath + "' is not in payload and provider spec is unavailable.");
+            } else if (resolution.getStatus() == SchemaNavigator.Resolution.Status.UNDECLARED) {
+                if (resolution.isAdditionalPropertiesAllowed()) {
+                    entry.addWarning("Field '" + effectivePath + "' is undeclared in spec, but permitted by additionalProperties.");
+                    entry.setReasonCode(ReasonCode.UNDECLARED);
+                } else {
+                    throw new OverrideException(ReasonCode.NOT_IN_SPEC,
+                            "Field '" + effectivePath + "' is neither in payload nor declared in spec.", resolution.getCandidates());
+                }
+            } else if (resolution.getStatus() == SchemaNavigator.Resolution.Status.DECLARED_IN_SPEC) {
+                targetPropSchema = resolution.getSchema();
+                specPointer = resolution.getSpecPointer();
+                entry.setSpecPointer(specPointer);
+            }
+        } else {
+            if (targetPropSchema == null && schemaNavigator != null && requestBodySchema != null) {
+                targetPropSchema = schemaNavigator.navigateExplicitPath(requestBodySchema, effectivePath);
+            }
         }
 
-        // 3. Coerce value
+        // 4. Coerce value
         String specType = (targetPropSchema != null) ? targetPropSchema.getType() : null;
         String specFormat = (targetPropSchema != null) ? targetPropSchema.getFormat() : null;
 
@@ -404,7 +592,7 @@ public class ParameterOverrideService {
         entry.setCoercedValue(coercionRes.getNode());
         entry.getWarnings().addAll(coercionRes.getWarnings());
 
-        // 4. Constraint validation
+        // 5. Constraint validation
         ConstraintValidator.ValidationResult valRes = ConstraintValidator.validate(
                 targetPropSchema,
                 coercionRes.getNode(),
@@ -414,18 +602,14 @@ public class ParameterOverrideService {
         );
 
         if (!valRes.isValid()) {
-            entry.setAction(OverrideAction.ERROR);
-            entry.setReasonCode("CONSTRAINT_VIOLATION");
-            entry.setReason(valRes.getErrorMessage());
-            summary.setErrors(summary.getErrors() + 1);
-            return;
+            throw new OverrideException(ReasonCode.CONSTRAINT_RANGE, valRes.getErrorMessage());
         }
         if (valRes.getWarningMessage() != null) {
             entry.addWarning(valRes.getWarningMessage());
             summary.setWarnings(summary.getWarnings() + 1);
         }
 
-        // 5. Apply override to body
+        // 6. Apply override to body copy
         PayloadOverrider.ApplyResult applyRes = PayloadOverrider.applyOverride(rootNode, effectivePath, coercionRes.getNode());
         entry.setAction(applyRes.isAdded() ? OverrideAction.ADDED : OverrideAction.MODIFIED);
 
@@ -464,64 +648,5 @@ public class ParameterOverrideService {
         }
 
         return ParamLocation.BODY;
-    }
-
-    private static class MatchResult {
-        TestCase testCase;
-        int matchCount = 0;
-        String matchedBy;
-        List<String> candidateNames = new ArrayList<>();
-    }
-
-    private MatchResult matchTestCase(TestSuite suite, String target, SpecIndex specIndex) {
-        MatchResult res = new MatchResult();
-        if (suite == null || suite.getTestCases() == null || target == null || target.isBlank()) {
-            return res;
-        }
-        String cleanTarget = target.trim();
-
-        // 1. Exact match on TestCase.name
-        for (TestCase tc : suite.getTestCases()) {
-            if (cleanTarget.equals(tc.getName())) {
-                res.matchCount++;
-                res.testCase = tc;
-                res.matchedBy = "NAME";
-                res.candidateNames.add(tc.getName());
-            }
-        }
-        if (res.matchCount == 1) return res;
-        if (res.matchCount > 1) return res;
-
-        // 2. Exact match on operationId
-        for (TestCase tc : suite.getTestCases()) {
-            if (cleanTarget.equals(tc.getOperationId())) {
-                res.matchCount++;
-                res.testCase = tc;
-                res.matchedBy = "OPERATION_ID";
-                res.candidateNames.add(tc.getName());
-            }
-        }
-        if (res.matchCount == 1) return res;
-        if (res.matchCount > 1) return res;
-
-        // 3. Match by METHOD /path-template (e.g. "POST /customers" or "GET /customers/{id}")
-        int spaceIdx = cleanTarget.indexOf(' ');
-        if (spaceIdx != -1) {
-            String method = cleanTarget.substring(0, spaceIdx).trim().toUpperCase();
-            String pathTpl = cleanTarget.substring(spaceIdx + 1).trim();
-
-            for (TestCase tc : suite.getTestCases()) {
-                if (method.equalsIgnoreCase(tc.getMethod())) {
-                    if (tc.getUrl() != null && tc.getUrl().contains(pathTpl)) {
-                        res.matchCount++;
-                        res.testCase = tc;
-                        res.matchedBy = "METHOD_PATH";
-                        res.candidateNames.add(tc.getName());
-                    }
-                }
-            }
-        }
-
-        return res;
     }
 }

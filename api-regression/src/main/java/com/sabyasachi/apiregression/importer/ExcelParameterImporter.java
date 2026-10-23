@@ -1,11 +1,12 @@
 package com.sabyasachi.apiregression.importer;
 
+import com.sabyasachi.apiregression.payload.OverrideException;
+import com.sabyasachi.apiregression.payload.ReasonCode;
 import org.apache.poi.EncryptedDocumentException;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -35,55 +36,58 @@ public class ExcelParameterImporter {
         String fileName = path.getFileName().toString().toLowerCase();
         if (!fileName.endsWith(".xlsx")) {
             if (fileName.endsWith(".xls") || fileName.endsWith(".csv")) {
-                throw new IllegalArgumentException("Only .xlsx Excel workbooks are supported. Please 'Save As .xlsx' in Excel and re-import.");
+                throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                        "Only .xlsx Excel workbooks are supported. Please 'Save As .xlsx' in Excel and re-import.");
             }
-            throw new IllegalArgumentException("Unsupported file format: expected .xlsx file.");
+            throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                    "Unsupported file format: expected .xlsx file.");
         }
 
         long size = Files.size(path);
         if (size > MAX_WORKBOOK_SIZE_BYTES) {
-            throw new IllegalArgumentException("Workbook exceeds maximum allowed size of 20 MB (" + (size / 1024 / 1024) + " MB).");
+            throw new OverrideException(ReasonCode.WORKBOOK_UNSUPPORTED,
+                    "Workbook exceeds maximum allowed size of 20 MB (" + (size / 1024 / 1024) + " MB).");
         }
 
-        // Open read-only via InputStream to avoid file lock issues on Windows/macOS
+        // Open read-only via InputStream wrapped in try-with-resources
         try (InputStream is = new FileInputStream(path.toFile())) {
             return parse(is, skipHiddenSheets, maxRowsPerSheet);
         } catch (EncryptedDocumentException e) {
-            throw new IllegalArgumentException("The workbook is password-protected or encrypted. Please save an unprotected copy and re-import.", e);
+            throw new OverrideException(ReasonCode.WORKBOOK_ENCRYPTED,
+                    "The workbook is password-protected or encrypted. Please save an unprotected copy and re-import.", e);
         }
     }
 
     public List<SheetParams> parse(InputStream inputStream, boolean skipHiddenSheets, int maxRowsPerSheet) throws IOException {
         List<SheetParams> results = new ArrayList<>();
 
-        Workbook workbook;
-        try {
-            workbook = new XSSFWorkbook(inputStream);
+        try (Workbook workbook = new XSSFWorkbook(inputStream)) {
+            int sheetCount = workbook.getNumberOfSheets();
+            for (int i = 0; i < sheetCount; i++) {
+                String sheetName = workbook.getSheetName(i);
+                boolean isHidden = workbook.isSheetHidden(i);
+                boolean isVeryHidden = workbook.isSheetVeryHidden(i);
+
+                SheetParams sheetParams = new SheetParams();
+                sheetParams.setSheetName(sheetName);
+
+                if (isVeryHidden || (isHidden && skipHiddenSheets)) {
+                    continue;
+                }
+
+                Sheet sheet = workbook.getSheetAt(i);
+                parseSheet(sheet, sheetParams, maxRowsPerSheet);
+                results.add(sheetParams);
+            }
         } catch (EncryptedDocumentException e) {
-            throw new IllegalArgumentException("The workbook is password-protected or encrypted. Please save an unprotected copy and re-import.", e);
+            throw new OverrideException(ReasonCode.WORKBOOK_ENCRYPTED,
+                    "The workbook is password-protected or encrypted. Please save an unprotected copy and re-import.", e);
+        } catch (OverrideException oe) {
+            throw oe;
         } catch (Exception e) {
             throw new IOException("Failed to read .xlsx workbook: " + e.getMessage(), e);
         }
 
-        int sheetCount = workbook.getNumberOfSheets();
-        for (int i = 0; i < sheetCount; i++) {
-            String sheetName = workbook.getSheetName(i);
-            boolean isHidden = workbook.isSheetHidden(i);
-            boolean isVeryHidden = workbook.isSheetVeryHidden(i);
-
-            SheetParams sheetParams = new SheetParams();
-            sheetParams.setSheetName(sheetName);
-
-            if (isVeryHidden || (isHidden && skipHiddenSheets)) {
-                continue;
-            }
-
-            Sheet sheet = workbook.getSheetAt(i);
-            parseSheet(sheet, sheetParams, maxRowsPerSheet);
-            results.add(sheetParams);
-        }
-
-        workbook.close();
         return results;
     }
 
@@ -165,7 +169,7 @@ public class ExcelParameterImporter {
 
             rowCount++;
             if (rowCount > maxRowsPerSheet) {
-                sheetParams.addSheetWarning("Sheet exceeds maximum allowed row limit of " + maxRowsPerSheet + " rows. Excess rows ignored.");
+                sheetParams.addSheetWarning("ROW_CAP_EXCEEDED: Sheet exceeds maximum allowed row limit of " + maxRowsPerSheet + " rows. Excess rows ignored.");
                 break;
             }
 
@@ -185,7 +189,7 @@ public class ExcelParameterImporter {
             Cell vCell = row.getCell(valueCol);
             if (vCell != null && isNonTopLeftMerged(vCell, mergedRegions)) {
                 paramRow.setRawValue(null);
-                paramRow.setCellKind("BLANK");
+                paramRow.setCellKindEnum(ParamRow.CellKind.BLANK);
                 paramRow.addWarning("Cell is inside a merged region and is not the top-left cell. Treated as blank.");
             } else {
                 extractCellValue(vCell, paramRow);
@@ -258,76 +262,90 @@ public class ExcelParameterImporter {
     private void extractCellValue(Cell cell, ParamRow paramRow) {
         if (cell == null) {
             paramRow.setRawValue(null);
-            paramRow.setCellKind("BLANK");
+            paramRow.setCellKindEnum(ParamRow.CellKind.BLANK);
             return;
         }
 
         CellType type = cell.getCellType();
         if (type == CellType.FORMULA) {
-            type = cell.getCachedFormulaResultType();
-            if (type == CellType.ERROR) {
+            boolean hasCache = true;
+            if (cell instanceof org.apache.poi.xssf.usermodel.XSSFCell xssfCell) {
+                if (!xssfCell.getCTCell().isSetV()) {
+                    hasCache = false;
+                }
+            }
+            CellType cachedType = cell.getCachedFormulaResultType();
+            if (!hasCache || cachedType == CellType._NONE || cachedType == CellType.BLANK) {
+                paramRow.setRawValue(null);
+                paramRow.setCellKindEnum(ParamRow.CellKind.NO_CACHE);
+                paramRow.addWarning("Formula has no cached value.");
+                return;
+            } else if (cachedType == CellType.ERROR) {
                 paramRow.setRawValue("#ERROR!");
-                paramRow.setCellKind("FORMULA_ERROR");
+                paramRow.setCellKindEnum(ParamRow.CellKind.ERROR);
                 paramRow.addWarning("Formula resulted in cached error: " + cell.getErrorCellValue());
                 return;
             }
+            type = cachedType;
         }
 
         switch (type) {
             case BLANK:
                 paramRow.setRawValue(null);
-                paramRow.setCellKind("BLANK");
+                paramRow.setCellKindEnum(ParamRow.CellKind.BLANK);
                 break;
             case BOOLEAN:
                 paramRow.setRawValue(String.valueOf(cell.getBooleanCellValue()));
-                paramRow.setCellKind("BOOLEAN");
+                paramRow.setCellKindEnum(ParamRow.CellKind.BOOLEAN);
                 break;
             case NUMERIC:
                 if (DateUtil.isCellDateFormatted(cell)) {
                     Date date = cell.getDateCellValue();
                     SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
                     paramRow.setRawValue(sdf.format(date));
-                    paramRow.setCellKind("DATE");
+                    paramRow.setCellKindEnum(ParamRow.CellKind.DATE);
                 } else {
                     double numVal = cell.getNumericCellValue();
                     // Check 15 significant digits precision limit: |value| >= 1e15
                     if (Math.abs(numVal) >= 1e15) {
-                        paramRow.addWarning("PRECISION_LIMIT: Numeric value has 15+ digits and may lose precision. Please format cell as Text in Excel.");
+                        paramRow.setCellKindEnum(ParamRow.CellKind.TOO_PRECISE);
+                        paramRow.addWarning("NUMBER_PRECISION_LOSS: Numeric value has 15+ digits and may lose precision. Please format cell as Text in Excel.");
+                    } else {
+                        paramRow.setCellKindEnum(ParamRow.CellKind.NUMERIC);
                     }
                     BigDecimal bd = BigDecimal.valueOf(numVal);
                     // Strip trailing zeros for integers (e.g. 10.0 -> "10")
                     String numStr = bd.stripTrailingZeros().toPlainString();
                     paramRow.setRawValue(numStr);
-                    paramRow.setCellKind("NUMERIC");
                 }
                 break;
             case STRING:
                 String text = cell.getStringCellValue();
                 if (text == null) {
                     paramRow.setRawValue(null);
-                    paramRow.setCellKind("BLANK");
+                    paramRow.setCellKindEnum(ParamRow.CellKind.BLANK);
                 } else if ("<null>".equalsIgnoreCase(text.trim())) {
                     paramRow.setRawValue("<null>");
-                    paramRow.setCellKind("NULL_LITERAL");
+                    paramRow.setCellKindEnum(ParamRow.CellKind.TEXT);
                 } else if ("<empty>".equalsIgnoreCase(text.trim())) {
                     paramRow.setRawValue("<empty>");
-                    paramRow.setCellKind("EMPTY_STRING");
+                    paramRow.setCellKindEnum(ParamRow.CellKind.TEXT);
                 } else {
                     if (text.startsWith(" ") || text.endsWith(" ")) {
                         paramRow.addWarning("Value cell has leading or trailing whitespace.");
                     }
                     paramRow.setRawValue(text);
-                    paramRow.setCellKind("STRING");
+                    paramRow.setCellKindEnum(ParamRow.CellKind.TEXT);
                 }
                 break;
             case ERROR:
                 paramRow.setRawValue("#ERROR!");
-                paramRow.setCellKind("ERROR");
+                paramRow.setCellKindEnum(ParamRow.CellKind.ERROR);
                 paramRow.addWarning("Cell contains error: " + cell.getErrorCellValue());
                 break;
             default:
                 paramRow.setRawValue(cell.toString());
-                paramRow.setCellKind("OTHER");
+                paramRow.setCellKindEnum(ParamRow.CellKind.TEXT);
                 break;
         }
     }

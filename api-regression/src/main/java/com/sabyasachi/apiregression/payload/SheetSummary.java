@@ -16,6 +16,18 @@ public class SheetSummary {
     private int errors;
     private int warnings;
     private String status = "NOT_APPLIED"; // APPLIED | PARTIAL | NOT_APPLIED | UNMATCHED | CONFLICT
+    private final java.util.List<String> sheetWarnings = new java.util.ArrayList<>();
+
+    public java.util.List<String> getSheetWarnings() {
+        return sheetWarnings;
+    }
+
+    public void addSheetWarning(String warning) {
+        if (warning != null && !warning.isBlank()) {
+            this.sheetWarnings.add(warning);
+            this.warnings++;
+        }
+    }
 
     public SheetSummary() {
     }

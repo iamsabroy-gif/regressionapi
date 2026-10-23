@@ -1,0 +1,14 @@
+openapi: 3.0.3
+info:
+  title: Hostile Relative Outside Spec
+  version: 1.0.0
+paths:
+  /data:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../../secret.yaml'

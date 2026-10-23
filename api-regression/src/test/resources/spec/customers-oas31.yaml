@@ -1,0 +1,133 @@
+openapi: 3.1.0
+info:
+  title: Customers API OAS 3.1
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /customers:
+    get:
+      operationId: getCustomers
+      summary: List customers
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+    post:
+      operationId: createCustomer
+      summary: Create customer
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: X-Request-Id
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Customer'
+      responses:
+        '201':
+          description: Created
+  /customers/{id}:
+    get:
+      operationId: getCustomerById
+      summary: Get customer by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: X-Request-Id
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+components:
+  schemas:
+    Base:
+      type: object
+      required:
+        - name
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE, PENDING]
+        code:
+          type: string
+          pattern: '^[A-Z]{2}\d{4}$'
+        dob:
+          type: string
+          format: date
+        notes:
+          type:
+            - string
+            - 'null'
+    Address:
+      type: object
+      required:
+        - city
+      properties:
+        street:
+          type: string
+        city:
+          type: string
+        zipCode:
+          type: string
+    Contact:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+    Customer:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          properties:
+            address:
+              $ref: '#/components/schemas/Address'
+            billing:
+              type: object
+              properties:
+                city:
+                  type: string
+            contacts:
+              type: array
+              items:
+                $ref: '#/components/schemas/Contact'
+            meta:
+              type: object
+              additionalProperties: true

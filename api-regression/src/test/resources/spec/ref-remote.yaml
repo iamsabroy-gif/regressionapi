@@ -1,0 +1,14 @@
+openapi: 3.0.3
+info:
+  title: Hostile Remote Ref Spec
+  version: 1.0.0
+paths:
+  /data:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: 'http://127.0.0.1:9999/remote.yaml'
