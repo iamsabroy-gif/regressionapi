@@ -408,8 +408,8 @@ public class ParameterOverrideService {
                         bodyModifiedOrAdded = true;
 
                     } else if (targetLocation == ParamLocation.QUERY) {
-                        processQueryOverride(row, paramPath, workingUrl, opMatch, coercer, options, entry, summary);
-                        RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overrideQueryParam(workingUrl, paramPath.getLeafName(), row.getRawValue());
+                        String finalVal = processQueryOverride(row, paramPath, workingUrl, opMatch, coercer, options, entry, summary);
+                        RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overrideQueryParam(workingUrl, paramPath.getLeafName(), finalVal);
                         workingUrl = partRes.getUpdatedUrl();
                         entry.setAction(partRes.isAdded() ? OverrideAction.ADDED : OverrideAction.MODIFIED);
                         entry.setResolvedPath("query." + paramPath.getLeafName());
@@ -417,8 +417,8 @@ public class ParameterOverrideService {
                         else summary.setModified(summary.getModified() + 1);
 
                     } else if (targetLocation == ParamLocation.HEADER) {
-                        processHeaderOverride(row, paramPath, workingHeaders, opMatch, coercer, options, entry, summary);
-                        RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overrideHeader(workingHeaders, paramPath.getLeafName(), row.getRawValue());
+                        String finalVal = processHeaderOverride(row, paramPath, workingHeaders, opMatch, coercer, options, entry, summary);
+                        RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overrideHeader(workingHeaders, paramPath.getLeafName(), finalVal);
                         workingHeaders = partRes.getUpdatedHeaders();
                         entry.setAction(partRes.isAdded() ? OverrideAction.ADDED : OverrideAction.MODIFIED);
                         entry.setResolvedPath("header." + paramPath.getLeafName());
@@ -430,8 +430,8 @@ public class ParameterOverrideService {
                             throw new OverrideException(ReasonCode.SPEC_UNAVAILABLE,
                                     "Path parameter override requires spec path template, but spec was unavailable or operation not found.");
                         }
-                        processPathOverride(row, paramPath, workingUrl, opMatch, coercer, options, entry, summary);
-                        RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overridePathParam(workingUrl, opMatch.getPathTemplate(), paramPath.getLeafName(), row.getRawValue());
+                        String finalVal = processPathOverride(row, paramPath, workingUrl, opMatch, coercer, options, entry, summary);
+                        RequestPartOverrider.OverridePartResult partRes = RequestPartOverrider.overridePathParam(workingUrl, opMatch.getPathTemplate(), paramPath.getLeafName(), finalVal);
                         workingUrl = partRes.getUpdatedUrl();
                         entry.setAction(OverrideAction.MODIFIED);
                         entry.setResolvedPath("path." + paramPath.getLeafName());
@@ -504,9 +504,9 @@ public class ParameterOverrideService {
         return report;
     }
 
-    private void processQueryOverride(ParamRow row, ParamPath paramPath, String currentUrl,
-                                      SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
-                                      OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+    private String processQueryOverride(ParamRow row, ParamPath paramPath, String currentUrl,
+                                        SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
+                                        OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
         String val = row.getRawValue();
         if ("<null>".equalsIgnoreCase(val != null ? val.trim() : "")) {
             throw new OverrideException(ReasonCode.NULL_NOT_ALLOWED_HERE,
@@ -523,14 +523,13 @@ public class ParameterOverrideService {
             }
         }
 
-        if (specParam != null && specParam.getSchema() != null) {
-            validateParamSchema(specParam.getSchema(), val, coercer, options, entry, summary);
-        }
+        Schema schema = (specParam != null) ? specParam.getSchema() : null;
+        return validateParamSchema(schema, row, val, coercer, options, entry, summary);
     }
 
-    private void processHeaderOverride(ParamRow row, ParamPath paramPath, Map<String, String> headers,
-                                       SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
-                                       OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+    private String processHeaderOverride(ParamRow row, ParamPath paramPath, Map<String, String> headers,
+                                         SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
+                                         OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
         String val = row.getRawValue();
         if ("<null>".equalsIgnoreCase(val != null ? val.trim() : "")) {
             throw new OverrideException(ReasonCode.NULL_NOT_ALLOWED_HERE,
@@ -554,14 +553,13 @@ public class ParameterOverrideService {
             }
         }
 
-        if (specParam != null && specParam.getSchema() != null) {
-            validateParamSchema(specParam.getSchema(), val, coercer, options, entry, summary);
-        }
+        Schema schema = (specParam != null) ? specParam.getSchema() : null;
+        return validateParamSchema(schema, row, val, coercer, options, entry, summary);
     }
 
-    private void processPathOverride(ParamRow row, ParamPath paramPath, String currentUrl,
-                                     SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
-                                     OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+    private String processPathOverride(ParamRow row, ParamPath paramPath, String currentUrl,
+                                       SpecIndex.OperationMatch opMatch, TypeCoercer coercer,
+                                       OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
         String val = row.getRawValue();
         if ("<null>".equalsIgnoreCase(val != null ? val.trim() : "")) {
             throw new OverrideException(ReasonCode.NULL_NOT_ALLOWED_HERE,
@@ -569,27 +567,50 @@ public class ParameterOverrideService {
         }
 
         Parameter specParam = (opMatch != null) ? opMatch.findParameter(paramPath.getLeafName(), "path") : null;
-        if (specParam != null && specParam.getSchema() != null) {
-            validateParamSchema(specParam.getSchema(), val, coercer, options, entry, summary);
-        }
+        Schema schema = (specParam != null) ? specParam.getSchema() : null;
+        return validateParamSchema(schema, row, val, coercer, options, entry, summary);
     }
 
-    private void validateParamSchema(Schema paramSchema, String rawValue, TypeCoercer coercer,
-                                     OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
-        if (rawValue == null || rawValue.contains("{{")) return;
+    private String validateParamSchema(Schema paramSchema, ParamRow row, String rawValue, TypeCoercer coercer,
+                                       OverrideOptions options, OverrideEntry entry, SheetSummary summary) {
+        if (rawValue == null || rawValue.contains("{{")) return rawValue;
         String val = "<empty>".equalsIgnoreCase(rawValue.trim()) ? "" : rawValue;
         List<String> warnings = new ArrayList<>();
-        TypeCoercer.CoercionResult cres = coercer.coerce(val, null, paramSchema.getType(), paramSchema.getFormat(), null, null, warnings);
-        entry.getWarnings().addAll(cres.getWarnings());
+        String specType = (paramSchema != null) ? paramSchema.getType() : null;
+        String specFormat = (paramSchema != null) ? paramSchema.getFormat() : null;
 
-        ConstraintValidator.ValidationResult vres = ConstraintValidator.validate(paramSchema, cres.getNode(), val, options.getConstraintPolicy(), false);
-        if (!vres.isValid()) {
-            throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT, vres.getErrorMessage());
+        TypeCoercer.CoercionResult cres = coercer.coerce(
+                val,
+                row != null ? row.getExplicitType() : null,
+                specType,
+                specFormat,
+                null,
+                row != null ? row.getCellKind() : null,
+                warnings
+        );
+        entry.getWarnings().addAll(cres.getWarnings());
+        if (cres.getNode() != null) {
+            entry.setCoercedValue(cres.getNode());
         }
-        if (vres.getWarningMessage() != null) {
-            entry.addWarning(vres.getWarningMessage());
-            summary.setWarnings(summary.getWarnings() + 1);
+
+        if (paramSchema != null) {
+            ConstraintValidator.ValidationResult vres = ConstraintValidator.validate(paramSchema, cres.getNode(), val, options.getConstraintPolicy(), false);
+            if (!vres.isValid()) {
+                throw new OverrideException(ReasonCode.CONSTRAINT_FORMAT, vres.getErrorMessage());
+            }
+            if (vres.getWarningMessage() != null) {
+                entry.addWarning(vres.getWarningMessage());
+                summary.setWarnings(summary.getWarnings() + 1);
+            }
         }
+
+        if (cres.getNode() != null && !cres.getNode().isNull()) {
+            if (cres.getNode().isValueNode()) {
+                return cres.getNode().asText();
+            }
+            return cres.getNode().toString();
+        }
+        return val;
     }
 
     private void processBodyOverride(ParamRow row, ParamPath paramPath, JsonNode rootNode, JsonNode initialBodyNode,

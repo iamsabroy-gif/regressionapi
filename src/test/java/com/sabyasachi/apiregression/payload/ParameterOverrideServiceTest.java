@@ -353,6 +353,63 @@ class ParameterOverrideServiceTest {
     }
 
     @Test
+    void testQueryHeaderPathOverrideNormalizesCheckedValue(@TempDir Path tempDir) throws Exception {
+        TestCase tc = new TestCase();
+        tc.setName("Update Existing Pet");
+        tc.setOperationId("updatePet");
+        tc.setMethod("PUT");
+        tc.setUrl("https://api.example.com/v1/pets/10");
+        Map<String, String> hdrs = new LinkedHashMap<>();
+        hdrs.put("Content-Type", "application/json");
+        tc.setHeaders(hdrs);
+        tc.setBodyTemplate("{\n  \"id\": 10,\n  \"name\": \"Fluffy\"\n}");
+
+        TestSuite suite = new TestSuite("Pet Suite");
+        suite.setTestCases(new ArrayList<>(List.of(tc)));
+
+        Path excelPath = tempDir.resolve("params.xlsx");
+        try (Workbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("updatePet");
+            Row h = sheet.createRow(0);
+            h.createCell(0).setCellValue("parameter");
+            h.createCell(1).setCellValue("value");
+            h.createCell(2).setCellValue("type");
+
+            // String "TRUE" for boolean query param -> should normalize to "true"
+            Row r1 = sheet.createRow(1);
+            r1.createCell(0).setCellValue("query.dryRun");
+            r1.createCell(1).setCellValue("TRUE");
+
+            // String "0099" for integer path param -> should normalize to "99"
+            Row r2 = sheet.createRow(2);
+            r2.createCell(0).setCellValue("path.petId");
+            r2.createCell(1).setCellValue("0099");
+
+            // String "TRUE" with explicit type "boolean" for header -> should normalize to "true"
+            Row r3 = sheet.createRow(3);
+            r3.createCell(0).setCellValue("header.X-Trace-Id");
+            r3.createCell(1).setCellValue("TRUE");
+            r3.createCell(2).setCellValue("boolean");
+
+            try (FileOutputStream fos = new FileOutputStream(excelPath.toFile())) {
+                wb.write(fos);
+            }
+        }
+
+        Path specPath = Path.of("src/test/resources/specs/petstore-oas3.json");
+        OverrideOptions options = new OverrideOptions();
+        ParameterOverrideService service = new ParameterOverrideService();
+
+        OverrideReport report = service.apply(suite, excelPath, specPath, options);
+        assertNotNull(report);
+        assertEquals(0, report.getTotalErrors());
+
+        // Verify normalized values were written rather than raw text
+        assertEquals("https://api.example.com/v1/pets/99?dryRun=true", tc.getUrl());
+        assertEquals("true", tc.getHeaders().get("X-Trace-Id"));
+    }
+
+    @Test
     void architecturalInvariants_noOverrideFailedString_noHashSetTestCase() throws Exception {
         Path srcMain = Path.of("src/main/java");
         assertTrue(java.nio.file.Files.exists(srcMain));
@@ -371,4 +428,5 @@ class ParameterOverrideServiceTest {
         }
     }
 }
+
 
