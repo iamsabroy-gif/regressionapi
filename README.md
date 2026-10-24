@@ -188,7 +188,7 @@ The application incorporates multi-layer security protections across spec loadin
 
 - **Strict Excel Column Contract**: Parameter sheets must follow the contract header names: `parameter`, `value`, `type`, `location`, `enabled`, `notes`. Legacy or non-standard headers (`op`, `path`, `param`, `action`) are rejected with `WORKBOOK_UNSUPPORTED` to eliminate ambiguity.
 - **Null Value Semantics**: `<null>` is permitted only for JSON body fields that are explicitly declared nullable or optional in the specification. Null values are strictly forbidden for query, header, and path parameters (`NULL_NOT_ALLOWED_HERE`). Use `<empty>` to specify an empty string.
-- **Spec Loader Resolution**: Rather than relying solely on third-party parser settings, `ProviderSpecLoader` executes a strict pre-pass via `RefGuard` before invoking the Swagger/OpenAPI parser to ensure malicious remote `$ref` URIs are rejected before any network socket is opened.
+- **Spec Loader Resolution & Two-Pass Architecture**: Rather than relying solely on third-party parser settings, `ProviderSpecLoader` executes a strict pre-pass via `RefGuard` before invoking the Swagger/OpenAPI parser to ensure malicious remote `$ref` URIs, cloud-metadata IP addresses, path traversals, and recursion loops are rejected before any network socket is opened. The parser subsequently resolves the specification via `readLocation` to ensure correct relative base-URI resolution across directories. A time-of-check to time-of-use (TOCTOU) window between the guard scan and parser read is an accepted low-risk trade-off for a local, desktop application where the user selects their own workspace specifications; as defense-in-depth, modification timestamps of all scanned files are verified post-parse.
 
 ---
 

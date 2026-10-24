@@ -142,6 +142,23 @@ public class ProviderSpecLoader {
             return loaded;
         }
 
+        /*
+         * Architecture Note & Design Decision:
+         * We employ a two-pass approach:
+         * 1. RefGuard.scan() performs an AST pre-scan over raw file bytes to enforce security boundaries
+         *    (rejecting remote URL schemes, cloud-metadata IP addresses, path traversal escapes outside the
+         *    spec root directory, and circular reference depth > 20).
+         * 2. OpenAPIParser.readLocation() parses and resolves the full OpenAPI/Swagger object graph.
+         *    readLocation is required so that the third-party parser maintains proper base-URI resolution
+         *    for multi-file specs with nested relative references.
+         *
+         * TOCTOU Consideration:
+         * A theoretical Time-Of-Check to Time-Of-Use race could occur if a local file were swapped between
+         * the RefGuard scan and parser.readLocation. In a desktop application where the user explicitly selects
+         * local workspace specifications, this is considered low risk and accepted by design.
+         * As defense-in-depth, we verify that none of the scanned files have shifted their modified timestamps
+         * between RefGuard's scan and the completion of parser.readLocation.
+         */
         ParseOptions options = new ParseOptions();
         options.setResolve(true);
         options.setResolveFully(true);
@@ -149,6 +166,17 @@ public class ProviderSpecLoader {
 
         OpenAPIParser parser = new OpenAPIParser();
         SwaggerParseResult parseResult = parser.readLocation(absKey, null, options);
+
+        // Defense-in-depth: Verify no scanned file was concurrently modified during parse
+        for (Map.Entry<Path, Long> entry : fileModifiedTimes.entrySet()) {
+            try {
+                if (!Files.exists(entry.getKey()) || Files.getLastModifiedTime(entry.getKey()).toMillis() != entry.getValue()) {
+                    throw new IOException("Spec file modified concurrently during load: " + entry.getKey());
+                }
+            } catch (IOException e) {
+                throw new IOException("Spec file modified concurrently during load: " + entry.getKey(), e);
+            }
+        }
 
         OpenAPI openAPI = parseResult.getOpenAPI();
         List<String> messages = parseResult.getMessages() != null ? new ArrayList<>(parseResult.getMessages()) : new ArrayList<>();
