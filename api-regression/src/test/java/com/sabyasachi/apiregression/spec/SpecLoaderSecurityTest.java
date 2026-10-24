@@ -169,4 +169,162 @@ public class SpecLoaderSecurityTest {
         RefGuard.GuardResult guardRes = RefGuard.scan(fileA);
         assertTrue(guardRes.isPassed());
     }
+
+    @Test
+    void refFileModified_invalidatesCacheAndReloads(@TempDir Path tempDir) throws Exception {
+        Path schemasDir = tempDir.resolve("schemas");
+        Files.createDirectories(schemasDir);
+
+        Path customerSchema = schemasDir.resolve("customer.yaml");
+        Files.writeString(customerSchema, """
+                type: object
+                properties:
+                  name:
+                    type: string
+                """);
+
+        Path rootSpec = tempDir.resolve("spec.yaml");
+        Files.writeString(rootSpec, """
+                openapi: 3.0.3
+                info:
+                  title: Customer Spec
+                  version: 1.0.0
+                paths:
+                  /customers:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema:
+                              $ref: 'schemas/customer.yaml'
+                      responses:
+                        '200':
+                          description: ok
+                """);
+
+        // 1. First load: schema contains only "name"
+        ProviderSpecLoader.LoadedSpec loaded1 = ProviderSpecLoader.load(rootSpec);
+        assertNotNull(loaded1.getOpenAPI());
+        var schema1 = loaded1.getOpenAPI().getPaths().get("/customers").getPost().getRequestBody().getContent().get("application/json").getSchema();
+        assertNotNull(schema1.getProperties().get("name"));
+        assertNull(schema1.getProperties().get("email"));
+
+        // Wait a moment so lastModified timestamp changes
+        Thread.sleep(50);
+
+        // 2. Modify ONLY schemas/customer.yaml (rootSpec is UNTOUCHED)
+        Files.writeString(customerSchema, """
+                type: object
+                properties:
+                  name:
+                    type: string
+                  email:
+                    type: string
+                """);
+        Files.setLastModifiedTime(customerSchema, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 1000));
+
+        // 3. Second load: rootSpec must be re-parsed because scanned ref file changed
+        ProviderSpecLoader.LoadedSpec loaded2 = ProviderSpecLoader.load(rootSpec);
+        assertNotNull(loaded2.getOpenAPI());
+        var schema2 = loaded2.getOpenAPI().getPaths().get("/customers").getPost().getRequestBody().getContent().get("application/json").getSchema();
+        assertNotNull(schema2.getProperties().get("name"));
+        assertNotNull(schema2.getProperties().get("email"), "Modified $ref file must be noticed by cache and reloaded");
+    }
+
+    @Test
+    void blockedRefFixed_invalidatesCacheAndLoadsSuccessfully(@TempDir Path tempDir) throws Exception {
+        Path schemasDir = tempDir.resolve("schemas");
+        Files.createDirectories(schemasDir);
+
+        Path childSchema = schemasDir.resolve("child.yaml");
+        // Initially blocked due to remote ref
+        Files.writeString(childSchema, """
+                type: object
+                properties:
+                  bad:
+                    $ref: 'http://127.0.0.1:9999/remote.yaml'
+                """);
+
+        Path rootSpec = tempDir.resolve("spec.yaml");
+        Files.writeString(rootSpec, """
+                openapi: 3.0.3
+                info:
+                  title: Blocked Ref Test
+                  version: 1.0.0
+                paths:
+                  /test:
+                    get:
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema:
+                                $ref: 'schemas/child.yaml'
+                """);
+
+        // 1. Initial load fails closed
+        ProviderSpecLoader.LoadedSpec loaded1 = ProviderSpecLoader.load(rootSpec);
+        assertNull(loaded1.getOpenAPI(), "Spec should be blocked due to child.yaml remote ref");
+
+        Thread.sleep(50);
+
+        // 2. Fix child.yaml so it is valid
+        Files.writeString(childSchema, """
+                type: object
+                properties:
+                  fixed:
+                    type: string
+                """);
+        Files.setLastModifiedTime(childSchema, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 1000));
+
+        // 3. Re-load: fixing the bad $ref file must be noticed and load successfully
+        ProviderSpecLoader.LoadedSpec loaded2 = ProviderSpecLoader.load(rootSpec);
+        assertNotNull(loaded2.getOpenAPI(), "Spec should load successfully after fixing bad $ref file");
+    }
+
+    @Test
+    void missingRefFileCreated_invalidatesCacheAndLoadsSuccessfully(@TempDir Path tempDir) throws Exception {
+        Path schemasDir = tempDir.resolve("schemas");
+        Files.createDirectories(schemasDir);
+
+        Path missingChild = schemasDir.resolve("missing.yaml");
+
+        Path rootSpec = tempDir.resolve("spec.yaml");
+        Files.writeString(rootSpec, """
+                openapi: 3.0.3
+                info:
+                  title: Missing Ref Test
+                  version: 1.0.0
+                paths:
+                  /test:
+                    get:
+                      responses:
+                        '200':
+                          description: ok
+                          content:
+                            application/json:
+                              schema:
+                                $ref: 'schemas/missing.yaml'
+                """);
+
+        // 1. Initial load fails due to missing file
+        ProviderSpecLoader.LoadedSpec loaded1 = ProviderSpecLoader.load(rootSpec);
+        assertNull(loaded1.getOpenAPI(), "Spec should fail when ref file is missing");
+        assertTrue(loaded1.getMessages().stream().anyMatch(m -> m.contains("REF_UNRESOLVED")));
+
+        Thread.sleep(50);
+
+        // 2. Create the missing file
+        Files.writeString(missingChild, """
+                type: object
+                properties:
+                  created:
+                    type: string
+                """);
+
+        // 3. Re-load: creation of missing $ref file must be noticed and load successfully
+        ProviderSpecLoader.LoadedSpec loaded2 = ProviderSpecLoader.load(rootSpec);
+        assertNotNull(loaded2.getOpenAPI(), "Spec should load successfully after creating missing $ref file");
+    }
 }

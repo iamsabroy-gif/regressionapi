@@ -18,10 +18,18 @@ public class RefGuard {
     public static class GuardResult {
         private final boolean passed;
         private final List<String> messages;
+        private final Set<Path> scannedFiles;
+        private final Set<Path> missingFiles;
 
         public GuardResult(boolean passed, List<String> messages) {
+            this(passed, messages, Collections.emptySet(), Collections.emptySet());
+        }
+
+        public GuardResult(boolean passed, List<String> messages, Set<Path> scannedFiles, Set<Path> missingFiles) {
             this.passed = passed;
             this.messages = messages != null ? messages : Collections.emptyList();
+            this.scannedFiles = scannedFiles != null ? scannedFiles : Collections.emptySet();
+            this.missingFiles = missingFiles != null ? missingFiles : Collections.emptySet();
         }
 
         public boolean isPassed() {
@@ -30,6 +38,14 @@ public class RefGuard {
 
         public List<String> getMessages() {
             return messages;
+        }
+
+        public Set<Path> getScannedFiles() {
+            return scannedFiles;
+        }
+
+        public Set<Path> getMissingFiles() {
+            return missingFiles;
         }
     }
 
@@ -40,7 +56,7 @@ public class RefGuard {
         List<String> messages = new ArrayList<>();
         if (rootSpecPath == null || !Files.exists(rootSpecPath)) {
             messages.add("SPEC_NOT_FOUND: Spec file does not exist: " + rootSpecPath);
-            return new GuardResult(false, messages);
+            return new GuardResult(false, messages, Collections.emptySet(), rootSpecPath != null ? Set.of(rootSpecPath) : Collections.emptySet());
         }
 
         Path realRoot;
@@ -53,15 +69,16 @@ public class RefGuard {
             }
         } catch (IOException e) {
             messages.add("SPEC_IO_ERROR: Failed to resolve real path: " + e.getMessage());
-            return new GuardResult(false, messages);
+            return new GuardResult(false, messages, Collections.emptySet(), Collections.emptySet());
         }
 
-        Set<Path> visitedFiles = new HashSet<>();
-        boolean passed = scanFile(realRoot, realSpecDir, 0, visitedFiles, messages);
-        return new GuardResult(passed, messages);
+        Set<Path> visitedFiles = new LinkedHashSet<>();
+        Set<Path> missingFiles = new LinkedHashSet<>();
+        boolean passed = scanFile(realRoot, realSpecDir, 0, visitedFiles, missingFiles, messages);
+        return new GuardResult(passed, messages, Collections.unmodifiableSet(visitedFiles), Collections.unmodifiableSet(missingFiles));
     }
 
-    private static boolean scanFile(Path currentFile, Path realSpecDir, int depth, Set<Path> visitedFiles, List<String> messages) {
+    private static boolean scanFile(Path currentFile, Path realSpecDir, int depth, Set<Path> visitedFiles, Set<Path> missingFiles, List<String> messages) {
         if (!visitedFiles.add(currentFile)) {
             return true; // Already scanned in this cycle
         }
@@ -101,7 +118,7 @@ public class RefGuard {
 
             boolean allPassed = true;
             for (String ref : refs) {
-                if (!checkRef(ref, currentFile.getParent(), realSpecDir, depth, visitedFiles, messages)) {
+                if (!checkRef(ref, currentFile.getParent(), realSpecDir, depth, visitedFiles, missingFiles, messages)) {
                     allPassed = false;
                 }
             }
@@ -133,7 +150,7 @@ public class RefGuard {
         }
     }
 
-    private static boolean checkRef(String ref, Path currentDir, Path realSpecDir, int depth, Set<Path> visitedFiles, List<String> messages) {
+    private static boolean checkRef(String ref, Path currentDir, Path realSpecDir, int depth, Set<Path> visitedFiles, Set<Path> missingFiles, List<String> messages) {
         if (ref == null || ref.isBlank()) {
             return true;
         }
@@ -168,6 +185,7 @@ public class RefGuard {
         Path target = currentDir.resolve(filePathPart).normalize();
         if (!Files.exists(target)) {
             messages.add("REF_UNRESOLVED: Unresolved relative reference: " + trimmed);
+            missingFiles.add(target.toAbsolutePath().normalize());
             return false;
         }
 
@@ -176,6 +194,7 @@ public class RefGuard {
             realTarget = target.toRealPath();
         } catch (IOException e) {
             messages.add("REF_UNRESOLVED: Cannot resolve real path for " + trimmed + ": " + e.getMessage());
+            missingFiles.add(target.toAbsolutePath().normalize());
             return false;
         }
 
@@ -193,6 +212,6 @@ public class RefGuard {
         }
 
         // Recurse into relative file
-        return scanFile(realTarget, realSpecDir, depth + 1, visitedFiles, messages);
+        return scanFile(realTarget, realSpecDir, depth + 1, visitedFiles, missingFiles, messages);
     }
 }

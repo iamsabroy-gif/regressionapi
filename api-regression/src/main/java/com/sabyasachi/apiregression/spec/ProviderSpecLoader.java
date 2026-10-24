@@ -51,16 +51,45 @@ public class ProviderSpecLoader {
     }
 
     private static class CacheEntry {
-        final long lastModified;
+        final Map<Path, Long> fileModifiedTimes;
+        final Set<Path> missingFiles;
         final LoadedSpec loadedSpec;
 
-        CacheEntry(long lastModified, LoadedSpec loadedSpec) {
-            this.lastModified = lastModified;
+        CacheEntry(Map<Path, Long> fileModifiedTimes, Set<Path> missingFiles, LoadedSpec loadedSpec) {
+            this.fileModifiedTimes = fileModifiedTimes != null ? fileModifiedTimes : Collections.emptyMap();
+            this.missingFiles = missingFiles != null ? missingFiles : Collections.emptySet();
             this.loadedSpec = loadedSpec;
+        }
+
+        boolean isStale() {
+            for (Path missing : missingFiles) {
+                if (Files.exists(missing)) {
+                    return true;
+                }
+            }
+            for (Map.Entry<Path, Long> entry : fileModifiedTimes.entrySet()) {
+                Path file = entry.getKey();
+                if (!Files.exists(file)) {
+                    return true;
+                }
+                try {
+                    long currentMtime = Files.getLastModifiedTime(file).toMillis();
+                    if (currentMtime != entry.getValue()) {
+                        return true;
+                    }
+                } catch (IOException e) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
     private static final Map<String, CacheEntry> SPEC_CACHE = new ConcurrentHashMap<>();
+
+    public static void clearCache() {
+        SPEC_CACHE.clear();
+    }
 
     public static OpenAPI loadOpenAPI(Path path) throws IOException {
         LoadedSpec loaded = load(path);
@@ -79,11 +108,10 @@ public class ProviderSpecLoader {
             throw new IOException("Spec file not found: " + path);
         }
 
-        long mtime = Files.getLastModifiedTime(path).toMillis();
         String absKey = path.toAbsolutePath().normalize().toString();
 
         CacheEntry cached = SPEC_CACHE.get(absKey);
-        if (cached != null && cached.lastModified == mtime) {
+        if (cached != null && !cached.isStale()) {
             return cached.loadedSpec;
         }
 
@@ -92,9 +120,25 @@ public class ProviderSpecLoader {
 
         // Pre-scan with RefGuard to enforce $ref allowlist (D4 / S1)
         RefGuard.GuardResult guardResult = RefGuard.scan(path);
+
+        // Record modified times of root file and all files scanned by RefGuard
+        Map<Path, Long> fileModifiedTimes = new LinkedHashMap<>();
+        try {
+            fileModifiedTimes.put(path.toRealPath(), Files.getLastModifiedTime(path).toMillis());
+        } catch (IOException e) {
+            fileModifiedTimes.put(path.toAbsolutePath().normalize(), Files.getLastModifiedTime(path).toMillis());
+        }
+        for (Path f : guardResult.getScannedFiles()) {
+            try {
+                if (Files.exists(f)) {
+                    fileModifiedTimes.put(f, Files.getLastModifiedTime(f).toMillis());
+                }
+            } catch (IOException ignored) {}
+        }
+
         if (!guardResult.isPassed()) {
             LoadedSpec loaded = new LoadedSpec(null, absKey, sha256, null, guardResult.getMessages());
-            SPEC_CACHE.put(absKey, new CacheEntry(mtime, loaded));
+            SPEC_CACHE.put(absKey, new CacheEntry(fileModifiedTimes, guardResult.getMissingFiles(), loaded));
             return loaded;
         }
 
@@ -121,7 +165,7 @@ public class ProviderSpecLoader {
         }
 
         LoadedSpec loaded = new LoadedSpec(openAPI, absKey, sha256, version, messages);
-        SPEC_CACHE.put(absKey, new CacheEntry(mtime, loaded));
+        SPEC_CACHE.put(absKey, new CacheEntry(fileModifiedTimes, guardResult.getMissingFiles(), loaded));
         return loaded;
     }
 
