@@ -8,7 +8,7 @@ Built to run entirely on a standard office laptop with a JDK installed (no exter
 
 ## Key Features
 
-1. **Standalone Runnable JAR**: Packaged as a single fat/shaded executable: `java -jar api-regression.jar`.
+1. **Standalone Runnable JAR**: Packaged as a single fat/shaded executable: `java -jar target/api-regression.jar`.
 2. **Native Desktop GUI**: Modern Java Swing interface with suite editor, token wiring, volatile path detector, and execution result diff viewer.
 3. **Authman / Token-Provider Support**: Designate any API as a token generator. The tool executes it first, extracts the token (via JSONPath or response header), and injects it into dependent test cases (e.g. `Authorization: Bearer {{authToken}}`).
 4. **Postman Collection & Environment Importer**: Recursively imports Postman Collections (v2.1 JSON) and companion environments, mapping folders to categories, query parameters, headers, authentication, raw JSON bodies, and sample responses.
@@ -37,48 +37,47 @@ Built to run entirely on a standard office laptop with a JDK installed (no exter
 
 ```
 ApiTesting/
-├── pom.xml                                   # Root Maven parent POM
-├── api-regression.jar                         # Pre-built runnable shaded fat JAR
+├── pom.xml                                   # Project Maven POM with shade configuration
 ├── phase1plan.md                             # Phase 1 design specification
 ├── README.md                                 # Documentation & usage guide
-├── api-regression/
-│   ├── pom.xml                               # Module POM with shade configuration
-│   └── src/
-│       ├── main/java/com/sabyasachi/apiregression/
-│       │   ├── Main.java                     # Application entry point (GUI & CLI)
-│       │   ├── model/                        # Data models
-│       │   │   ├── Auth.java                 # Bearer, Basic, ApiKey, None
-│       │   │   ├── TestCase.java             # Individual API definition & token settings
-│       │   │   ├── TestSuite.java            # Suite container, baseUrl, and variables
-│       │   │   └── TestResult.java           # Pass/fail, latency, actual response, diff
-│       │   ├── client/
-│       │   │   ├── HttpRunner.java           # java.net.http execution engine
-│       │   │   └── Substitutor.java          # {{var}} placeholder substitution
-│       │   ├── compare/
-│       │   │   ├── JsonComparator.java       # json-unit comparison wrapper
-│       │   │   └── IgnorePathHeuristic.java  # Auto-detects volatile JSON fields
-│       │   ├── store/
-│       │   │   └── SuiteRepository.java      # JSON persistence for TestSuite files
-│       │   ├── importer/
-│       │   │   ├── PostmanCollectionImporter.java # Postman v2.1 recursive parser
-│       │   │   └── PostmanEnvironmentImporter.java # Postman environment values parser
-│       │   ├── runner/
-│       │   │   ├── TokenProviderResolver.java # Resolves Authman token providers first
-│       │   │   ├── SuiteRunner.java          # Suite execution orchestrator
-│       │   │   └── ReportWriter.java         # Generates HTML and JSON test reports
-│       │   └── ui/
-│       │       ├── MainFrame.java            # Desktop main window & menu bar
-│       │       ├── SuiteEditorPanel.java     # Suite variables & TestCase table editor
-│       │       ├── TestCaseEditDialog.java   # Full request, header, auth, body & token dialog
-│       │       ├── RunResultsPanel.java      # Execution progress & diff inspection panel
-│       │       └── ImportDialog.java         # Postman collection & environment picker
-│       └── test/java/com/sabyasachi/apiregression/ # Comprehensive unit & integration tests
-│           ├── client/HttpRunnerTest.java
-│           ├── client/SubstitutorTest.java
-│           ├── compare/JsonComparatorTest.java
-│           ├── importer/PostmanImporterTest.java
-│           ├── runner/SuiteRunnerTest.java
-│           └── store/SuiteRepositoryTest.java
+├── src/
+│   ├── main/java/com/sabyasachi/apiregression/
+│   │   ├── Main.java                         # Application entry point (GUI & CLI)
+│   │   ├── model/                            # Data models
+│   │   │   ├── Auth.java                     # Bearer, Basic, ApiKey, None
+│   │   │   ├── TestCase.java                 # Individual API definition & token settings
+│   │   │   ├── TestSuite.java                # Suite container, baseUrl, and variables
+│   │   │   └── TestResult.java               # Pass/fail, latency, actual response, diff
+│   │   ├── client/
+│   │   │   ├── HttpRunner.java               # java.net.http execution engine
+│   │   │   └── Substitutor.java              # {{var}} placeholder substitution
+│   │   ├── compare/
+│   │   │   ├── JsonComparator.java           # json-unit comparison wrapper
+│   │   │   └── IgnorePathHeuristic.java      # Auto-detects volatile JSON fields
+│   │   ├── store/
+│   │   │   └── SuiteRepository.java          # JSON persistence for TestSuite files
+│   │   ├── importer/
+│   │   │   ├── PostmanCollectionImporter.java # Postman v2.1 recursive parser
+│   │   │   ├── PostmanEnvironmentImporter.java # Postman environment values parser
+│   │   │   └── ExcelParameterImporter.java   # Excel .xlsx parameter sheet parser
+│   │   ├── runner/
+│   │   │   ├── TokenProviderResolver.java    # Resolves Authman token providers first
+│   │   │   ├── SuiteRunner.java              # Suite execution orchestrator
+│   │   │   └── ReportWriter.java             # Generates HTML and JSON test reports
+│   │   └── ui/
+│   │       ├── MainFrame.java                # Desktop main window & menu bar
+│   │       ├── SuiteEditorPanel.java         # Suite variables & TestCase table editor
+│   │       ├── TestCaseEditDialog.java       # Full request, header, auth, body & token dialog
+│   │       ├── RunResultsPanel.java          # Execution progress & diff inspection panel
+│   │       └── ImportDialog.java             # Postman collection & environment picker
+│   └── test/java/com/sabyasachi/apiregression/ # Comprehensive unit & integration tests
+│       ├── TraceabilityCheckTest.java        # Full traceability coverage (H1-H6, M1-M11, Low1-Low2, S1-S6)
+│       ├── client/HttpRunnerTest.java
+│       ├── client/SubstitutorTest.java
+│       ├── compare/JsonComparatorTest.java
+│       ├── importer/PostmanImporterTest.java
+│       ├── runner/SuiteRunnerTest.java
+│       └── store/SuiteRepositoryTest.java
 └── examples/
     ├── sample_suite.json                     # Complete working demo suite
     ├── sample_postman_collection.json        # Sample Postman v2.1 collection
@@ -95,8 +94,8 @@ To clean and compile the project into the single runnable fat JAR:
 mvn clean package
 ```
 
-The shaded fat JAR will be generated at:
-- `api-regression/target/api-regression.jar` (and mirrored to `./api-regression.jar` in the root).
+The shaded fat JAR will be generated in `target/`:
+- `target/api-regression.jar`
 
 To run the full test suite:
 
@@ -112,7 +111,7 @@ mvn test
 Launch the application window with:
 
 ```bash
-java -jar api-regression.jar
+java -jar target/api-regression.jar
 ```
 
 In the GUI:
@@ -136,17 +135,17 @@ You can run suites directly in the terminal, configure execution options, or val
 
 ```bash
 # Check version
-java -jar api-regression.jar --version
+java -jar target/api-regression.jar --version
 
 # Validate an OpenAPI 3.x, OpenAPI 3.1, or Swagger 2.0 specification
-java -jar api-regression.jar --check-spec examples/sample_openapi.json
-java -jar api-regression.jar --check-spec examples/sample_swagger2.json
+java -jar target/api-regression.jar --check-spec examples/sample_openapi.json
+java -jar target/api-regression.jar --check-spec examples/sample_swagger2.json
 
 # Run a suite and export HTML + JSON reports
-java -jar api-regression.jar --run examples/sample_suite.json --html target/demo_report.html --json target/demo_report.json
+java -jar target/api-regression.jar --run examples/sample_suite.json --html target/demo_report.html --json target/demo_report.json
 
 # Run a suite with custom timeout, idempotent retries, and parallel worker threads
-java -jar api-regression.jar --run examples/sample_suite.json --timeout 15 --retries 2 --threads 4
+java -jar target/api-regression.jar --run examples/sample_suite.json --timeout 15 --retries 2 --threads 4
 ```
 
 #### CLI Execution Options (Step 8)
@@ -194,7 +193,8 @@ The application incorporates multi-layer security protections across spec loadin
 
 ## Definition of Done Verification
 
-- [x] `mvn clean package` produces one runnable fat JAR (`api-regression.jar`).
+- [x] `mvn clean package` produces one runnable fat JAR in `target/api-regression.jar`.
+- [x] Single root `pom.xml` build; no stale binary JARs committed in the repository tree.
 - [x] GUI can create a suite by hand, import Postman collections and environments, save/load suite JSON, run the suite, view pass/fail + diffs per TestCase, and export HTML/JSON reports.
 - [x] GUI designates token-provider APIs, automatically extracts tokens from responses (via JSONPath or header), and injects them into dependent APIs.
 - [x] Excel parameter override (§3a):
@@ -205,5 +205,5 @@ The application incorporates multi-layer security protections across spec loadin
   - [x] Override report exports to JSON and HTML with per-sheet counts, action ranking, and spec messages.
   - [x] Revert to Baseline and Promote to Baseline cleanly clear override provenance and manual edit warnings.
   - [x] The shaded fat JAR parses Swagger 2.0 via `--check-spec` using ServiceLoader SPI discovery and reads Excel parameter workbooks without logging warnings or Log4j noise.
-- [x] Automated test suite: **166/166 tests passing** (exceeds ≥ 150 target) with 100% pass rate across unit, integration, security, and idempotency suites.
+- [x] Automated test suite: **189/189 tests passing** with 100% pass rate across unit, integration, security, and full traceability matrix (H1–H6, M1–M11, Low1–Low2, S1–S6).
 
