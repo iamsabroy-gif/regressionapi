@@ -14,6 +14,9 @@ public class SheetParams {
     private String defaultLocation;
     private String status;
     private String skipReason;
+    private Integer runIndex;
+    private String runLabel;
+    private Integer runExpectedStatus;
     private final Map<String, String> metadata = new LinkedHashMap<>();
     private final List<ParamRow> rows = new ArrayList<>();
     private final List<String> sheetWarnings = new ArrayList<>();
@@ -32,6 +35,30 @@ public class SheetParams {
 
     public void setSkipReason(String skipReason) {
         this.skipReason = skipReason;
+    }
+
+    public Integer getRunIndex() {
+        return runIndex;
+    }
+
+    public void setRunIndex(Integer runIndex) {
+        this.runIndex = runIndex;
+    }
+
+    public String getRunLabel() {
+        return runLabel;
+    }
+
+    public void setRunLabel(String runLabel) {
+        this.runLabel = runLabel;
+    }
+
+    public Integer getRunExpectedStatus() {
+        return runExpectedStatus;
+    }
+
+    public void setRunExpectedStatus(Integer runExpectedStatus) {
+        this.runExpectedStatus = runExpectedStatus;
     }
 
     public SheetParams() {

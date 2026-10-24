@@ -1,0 +1,25 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Mock Customer API", "version": "1" },
+  "paths": {
+    "/generateAccessToken": {
+      "post": { "operationId": "generateAccessToken",
+        "responses": { "200": { "description": "token" } } }
+    },
+    "/getCustDetails": {
+      "post": {
+        "operationId": "getCustDetails",
+        "requestBody": { "content": { "application/json": { "schema": {
+          "type": "object",
+          "required": ["SessionContext", "CustId"],
+          "properties": {
+            "SessionContext": { "type": "object", "required": ["BankCode", "refid", "userid"],
+              "properties": { "BankCode": { "type": "string" }, "refid": { "type": "string" }, "userid": { "type": "string" } } },
+            "CustId": { "type": "string", "pattern": "^\\d{6}$" },
+            "accountNum": { "type": "string", "pattern": "^\\d{8}$" }
+          } } } } },
+        "responses": { "200": { "description": "customer details" } }
+      }
+    }
+  }
+}

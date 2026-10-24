@@ -137,9 +137,10 @@ You can run suites directly in the terminal, configure execution options, or val
 # Check version
 java -jar target/api-regression.jar --version
 
-# Validate an OpenAPI 3.x, OpenAPI 3.1, or Swagger 2.0 specification
+# Validate an OpenAPI 3.x, OpenAPI 3.1, Swagger 2.0, or Excel (.xlsx) provider specification
 java -jar target/api-regression.jar --check-spec examples/sample_openapi.json
 java -jar target/api-regression.jar --check-spec examples/sample_swagger2.json
+java -jar target/api-regression.jar --check-spec examples/sample_spec.xlsx
 
 # Run a suite and export HTML + JSON reports
 java -jar target/api-regression.jar --run examples/sample_suite.json --html target/demo_report.html --json target/demo_report.json
@@ -152,6 +153,94 @@ java -jar target/api-regression.jar --run examples/sample_suite.json --timeout 1
 - `--timeout <sec>`: HTTP socket and connection timeout (default: 30s).
 - `--retries <n>`: Number of retries for idempotent HTTP methods (`GET, HEAD, PUT, DELETE, OPTIONS`) on network `IOException` or 502/503/504 gateway errors with exponential backoff (default: 0). Non-idempotent methods (`POST, PATCH`) are never retried.
 - `--threads <n>`: Number of parallel execution threads (default: 1). Original test case ordering in results and reports is strictly preserved.
+
+---
+
+## Excel Provider Specifications (`.xlsx`)
+
+In addition to standard OpenAPI 3.x and Swagger 2.0 JSON/YAML files, the tool supports loading provider request specifications directly from `.xlsx` Excel workbooks. The loader converts the workbook into an in-memory `io.swagger.v3.oas.models.OpenAPI` object, enabling full gap-fill, constraint validation, and parameter overriding without requiring third-party spec authorship tools.
+
+### Workbook Structure
+
+Each sheet in the workbook represents an API operation (or documentation/notes, which are safely ignored):
+
+1. **Prologue Metadata (Rows 1–3)**:
+   - `operation`: HTTP method and path pattern (e.g. `POST /getCustDetails`). Mandatory.
+   - `operationId`: Optional operation identifier (defaults to sheet name).
+   - `basePath`: Optional server base URL (e.g. `https://api.example.com`).
+2. **Header Row**:
+   - Column aliases recognized: `Field` (or `Parameter`, `Property`), `Example` (or `Value`), `Type`, `Required`, `Pattern`, `Location`.
+3. **Data Rows & Nesting Modes**:
+   - **Indentation Mode**: Visual nesting via leading spaces (2 spaces = 1 depth level) or Excel cell indentation (`getIndention()`).
+   - **Brace Mode**: Nesting via curly braces `{` / `}` and brackets `[` / `]`.
+   - **Arrays**: Denoted by `[]`, `[0]`, `object[]`, or `string[]`.
+   - **Locations**: Body properties (default) or parameters (`query`, `header`, `path`).
+
+### Example (`examples/sample_spec.xlsx`)
+
+```text
+Sheet: getCustDetails
+Row 1: operation          | POST /getCustDetails
+Row 2: operationId        | getCustDetails
+Row 3: [blank]
+Row 4: Field              | Example   | Type   | Required | Pattern
+Row 5: SessionContext     |           | object | Y        |
+Row 6:   BankCode         | HDFC01    | string | Y        |
+Row 7:   refid            | R-1001    | string | Y        |
+Row 8:   userid           | U-77      | string | Y        |
+Row 9: CustId             | 123456    | string | Y        | ^\d{6}$
+Row 10: accountNum        | 12345678  | string | Y        | ^\d{8}$
+```
+
+### Security Caps & Limits
+
+- **File Size**: Maximum 5 MB (`SPEC_LIMIT_EXCEEDED`).
+- **Sheets**: Maximum 50 sheets (`SPEC_LIMIT_EXCEEDED`).
+- **Rows**: Maximum 2,000 rows per sheet (`SPEC_LIMIT_EXCEEDED`).
+- **Columns**: Maximum 10 columns evaluated per row.
+- **Nesting Depth**: Maximum 8 levels (`SPEC_LIMIT_EXCEEDED`).
+- **Properties**: Maximum 1,000 properties across all sheets.
+- **Operations**: Maximum 50 operations (`SPEC_LIMIT_EXCEEDED`).
+- **Key & Pattern**: Key length <= 128 chars (no control chars, no `$ref` / `#/`). Regex pattern length <= 512 chars.
+- **Formulas & External Links**: External references are rejected without network I/O; formula cells evaluate cached values only (`SPEC_FORMULA_NO_CACHE`).
+
+---
+
+## Data-Driven Sheets (Multi-Run Parameters)
+
+The tool supports data-driven test generation directly from `.xlsx` spreadsheets:
+- **Layout**: Each column corresponds to a parameter (e.g. `CustId`, `accountNum`, `query.sort`, `header.X-Tenant`). Each row below the header defines one execution run.
+- **Detection**: A sheet is data-driven when its header row does not contain a `parameter` column and has at least one parameter column.
+- **Reserved Columns**:
+  - `run`: Optional label identifying the run (e.g. `valid-user`, `run-1`). If omitted, defaults to the 1-based index (`1`, `2`, ...).
+  - `expectedStatus`: Optional numeric HTTP status code override for that specific run (e.g. `404`, `400`).
+  - `note` / `notes`: Ignored explanatory notes.
+- **Blank Cells & Spacers**:
+  - A blank parameter cell means "leave this field as imported for this run" (reported as `SKIPPED` / `BLANK`).
+  - Spacer rows (rows where every parameter cell is blank) are automatically skipped and noted in the report.
+  - Short columns emit visible warnings indicating how many runs use imported values.
+- **Execution & Isolation**:
+  - The matched test case is designated as a `[template]` and skipped during test execution.
+  - Each run generates a derived test case (`TestCase [runLabel]`) inserted immediately following the template.
+  - Per-run error isolation: a run whose values fail validation produces an error for that run only; clean runs continue to execute.
+  - Re-applying is completely idempotent: prior derived cases are cleaned up and replaced.
+
+### Headless CLI Usage
+
+Execute a suite with runtime parameter overrides in CI/CD without writing to disk:
+```bash
+java -jar target/api-regression.jar --run suite.json --params examples/mock_runs_params.xlsx
+```
+
+Apply parameter overrides and export the expanded suite to a new file:
+```bash
+java -jar target/api-regression.jar --apply-params suite.json examples/mock_runs_params.xlsx --out applied.json
+```
+
+Dry-run preview without modifying files:
+```bash
+java -jar target/api-regression.jar --apply-params suite.json examples/mock_runs_params.xlsx --dry-run
+```
 
 ---
 
@@ -198,13 +287,15 @@ The application incorporates multi-layer security protections across spec loadin
 - [x] GUI can create a suite by hand, import Postman collections and environments, save/load suite JSON, run the suite, view pass/fail + diffs per TestCase, and export HTML/JSON reports.
 - [x] GUI designates token-provider APIs, automatically extracts tokens from responses (via JSONPath or header), and injects them into dependent APIs.
 - [x] Excel parameter override (§3a):
-  - [x] GUI can attach a local provider spec (Swagger 2.0, OpenAPI 3.0, OpenAPI 3.1; JSON or YAML) and import an `.xlsx` workbook; dry run report always shown before apply.
+  - [x] GUI can attach a local provider spec (Swagger 2.0, OpenAPI 3.0, OpenAPI 3.1, or Excel `.xlsx`; JSON, YAML, or XLSX) and import an `.xlsx` workbook; dry run report always shown before apply.
   - [x] Only listed parameters change; untouched-fields invariance and round-trip byte idempotency verified; no field is ever deleted.
   - [x] Missing parameters are added from spec at the correct body path / query / path / header with spec-correct type; undeclared, ambiguous, or uncoercible parameters produce audit ERROR entries with candidate suggestions.
   - [x] Unmatched / ambiguous / conflicting sheets are reported and not applied; spec missing or operation not found still applies modifications to existing parameters.
   - [x] Override report exports to JSON and HTML with per-sheet counts, action ranking, and spec messages.
   - [x] Revert to Baseline and Promote to Baseline cleanly clear override provenance and manual edit warnings.
   - [x] The shaded fat JAR parses Swagger 2.0 via `--check-spec` using ServiceLoader SPI discovery and reads Excel parameter workbooks without logging warnings or Log4j noise.
-- [x] Automated test suite: **189/189 tests passing** with 100% pass rate across unit, integration, security, and full traceability matrix (H1–H6, M1–M11, Low1–Low2, S1–S6).
-
-# regressionapi
+- [x] Excel provider specification (§3b / specupdate.md):
+  - [x] Loads nested provider schemas from `.xlsx` using Indentation or Brace syntax.
+  - [x] Converts workbook into an in-memory OpenAPI model for seamless consumption by existing gap-fill and constraint validation.
+  - [x] Tested with full unit, security, and parity tests against YAML/JSON OpenAPI equivalents.
+- [x] Automated test suite: **226/226 tests passing** with 100% pass rate across unit, integration, security, parity, and full traceability matrix.

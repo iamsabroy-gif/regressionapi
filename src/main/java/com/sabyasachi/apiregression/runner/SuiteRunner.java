@@ -55,7 +55,21 @@ public class SuiteRunner {
         TokenProviderResolver.TokenResolutionOutcome tokenOutcome = tokenResolver.resolve(suite, runVariables);
         results.addAll(tokenOutcome.getProviderResults());
 
-        int totalCount = suite.getTestCases().size();
+        RunOptions runOptions = suite.getRunOptions() != null ? suite.getRunOptions() : new RunOptions();
+        HttpRunner effectiveHttpRunner = createRunnerForRun(runOptions);
+        int effectiveRetryCount = (runOptions.getRetryCount() > 0)
+                ? runOptions.getRetryCount()
+                : (effectiveHttpRunner != null ? effectiveHttpRunner.getRetryCount() : 0);
+
+        // 3. Collect regular (non-token-provider, non-template) TestCases
+        List<TestCase> regularCases = new ArrayList<>();
+        for (TestCase tc : suite.getTestCases()) {
+            if (!tc.isTokenProvider() && !tc.isTemplate()) {
+                regularCases.add(tc);
+            }
+        }
+
+        int totalCount = tokenOutcome.getProviderResults().size() + regularCases.size();
         int currentIndex = 0;
 
         // If listener is present, notify about the token provider results
@@ -66,20 +80,6 @@ public class SuiteRunner {
             }
         } else {
             currentIndex = tokenOutcome.getProviderResults().size();
-        }
-
-        RunOptions runOptions = suite.getRunOptions() != null ? suite.getRunOptions() : new RunOptions();
-        HttpRunner effectiveHttpRunner = createRunnerForRun(runOptions);
-        int effectiveRetryCount = (runOptions.getRetryCount() > 0)
-                ? runOptions.getRetryCount()
-                : (effectiveHttpRunner != null ? effectiveHttpRunner.getRetryCount() : 0);
-
-        // 3. Collect regular (non-token-provider) TestCases
-        List<TestCase> regularCases = new ArrayList<>();
-        for (TestCase tc : suite.getTestCases()) {
-            if (!tc.isTokenProvider()) {
-                regularCases.add(tc);
-            }
         }
 
         int poolSize = runOptions.getThreads();

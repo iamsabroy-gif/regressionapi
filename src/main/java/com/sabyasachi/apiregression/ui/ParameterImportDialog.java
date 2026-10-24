@@ -130,8 +130,8 @@ public class ParameterImportDialog extends JDialog {
 
     private void chooseSpec() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Select OpenAPI / Swagger Spec (JSON or YAML)");
-        chooser.setFileFilter(new FileNameExtensionFilter("OpenAPI / Swagger Spec (*.json, *.yaml, *.yml)", "json", "yaml", "yml"));
+        chooser.setDialogTitle("Select Provider Specification (JSON, YAML, or Excel .xlsx)");
+        chooser.setFileFilter(new FileNameExtensionFilter("Specification Files (*.json, *.yaml, *.yml, *.xlsx)", "json", "yaml", "yml", "xlsx"));
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             specField.setText(chooser.getSelectedFile().getAbsolutePath());
         }

@@ -198,16 +198,52 @@ public class TestCaseEditDialog extends JDialog {
     }
 
     private JPanel createHeadersTab() {
-        JPanel panel = new JPanel(new BorderLayout(6, 6));
-        panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        // Header guidance banner
+        JPanel infoPanel = new JPanel(new BorderLayout());
+        infoPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(220, 224, 230)),
+                BorderFactory.createEmptyBorder(0, 0, 8, 0)
+        ));
+        JLabel infoLabel = new JLabel("<html><b>HTTP Request Headers:</b> Configure headers sent with this request (e.g. <code>Authorization: Bearer {{token}}</code>).<br/>"
+                + "Click <b>Add Header</b> to open the header entry dialog, or double-click any cell to edit directly.</html>");
+        infoPanel.add(infoLabel, BorderLayout.CENTER);
+        panel.add(infoPanel, BorderLayout.NORTH);
 
         headersTableModel = new DefaultTableModel(new String[]{"Header Name", "Header Value"}, 0);
         headersTable = new JTable(headersTableModel);
+        headersTable.setRowHeight(24);
+        headersTable.getColumnModel().getColumn(0).setPreferredWidth(220);
+        headersTable.getColumnModel().getColumn(1).setPreferredWidth(450);
+        // Commit a half-typed cell when focus leaves, otherwise Save reads the old (empty) value.
+        headersTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         panel.add(new JScrollPane(headersTable), BorderLayout.CENTER);
 
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         JButton addBtn = new JButton("Add Header");
-        addBtn.addActionListener(e -> headersTableModel.addRow(new Object[]{"", ""}));
+        addBtn.setToolTipText("Open dialog to specify header name and value");
+        addBtn.addActionListener(e -> showAddOrEditHeaderDialog(null, "Authorization", ""));
+
+        JButton addBlankBtn = new JButton("Add Blank Row");
+        addBlankBtn.setToolTipText("Add an empty row to edit directly in the table");
+        addBlankBtn.addActionListener(e -> addBlankHeaderRow());
+
+        JButton editBtn = new JButton("Edit Selected");
+        editBtn.setToolTipText("Edit selected header in dialog");
+        editBtn.addActionListener(e -> {
+            int selected = headersTable.getSelectedRow();
+            if (selected < 0) {
+                JOptionPane.showMessageDialog(this, "Please select a header row to edit.",
+                        "No Header Selected", JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            String name = (String) headersTableModel.getValueAt(selected, 0);
+            String val = (String) headersTableModel.getValueAt(selected, 1);
+            showAddOrEditHeaderDialog(selected, name != null ? name : "", val != null ? val : "");
+        });
+
         JButton removeBtn = new JButton("Remove Selected");
         removeBtn.addActionListener(e -> {
             int selected = headersTable.getSelectedRow();
@@ -215,9 +251,124 @@ public class TestCaseEditDialog extends JDialog {
         });
 
         btnPanel.add(addBtn);
+        btnPanel.add(addBlankBtn);
+        btnPanel.add(editBtn);
         btnPanel.add(removeBtn);
         panel.add(btnPanel, BorderLayout.SOUTH);
         return panel;
+    }
+
+    private void addBlankHeaderRow() {
+        headersTableModel.addRow(new Object[]{"", ""});
+        int newRow = headersTableModel.getRowCount() - 1;
+        headersTable.setRowSelectionInterval(newRow, newRow);
+        headersTable.scrollRectToVisible(headersTable.getCellRect(newRow, 0, true));
+        headersTable.editCellAt(newRow, 0);
+        Component editor = headersTable.getEditorComponent();
+        if (editor != null) {
+            editor.requestFocusInWindow();
+        }
+    }
+
+    private void showAddOrEditHeaderDialog(Integer rowIndex, String initialName, String initialValue) {
+        boolean isEdit = (rowIndex != null);
+        JPanel form = new JPanel(new GridBagLayout());
+        form.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(6, 6, 6, 6);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        // Top info banner in dialog
+        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
+        JLabel banner = new JLabel("<html><b>" + (isEdit ? "Edit HTTP Request Header" : "Add HTTP Request Header") + "</b><br/>"
+                + "Enter both the header name and value to send with this request.<br/>"
+                + "Variables like <code>{{authToken}}</code> or <code>{{baseUrl}}</code> are supported in values.</html>");
+        banner.setBorder(BorderFactory.createEmptyBorder(0, 0, 8, 0));
+        form.add(banner, gbc);
+
+        // Header Name
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
+        form.add(new JLabel("Header Name: *"), gbc);
+
+        gbc.gridx = 1; gbc.gridy = 1; gbc.weightx = 1.0;
+        String[] commonHeaders = new String[]{
+                "Authorization", "Content-Type", "Accept", "User-Agent",
+                "X-API-Key", "X-Trace-Id", "Cache-Control", "Origin"
+        };
+        JComboBox<String> nameCombo = new JComboBox<>(commonHeaders);
+        nameCombo.setEditable(true);
+        if (initialName != null && !initialName.isBlank()) {
+            nameCombo.setSelectedItem(initialName);
+        }
+        form.add(nameCombo, gbc);
+
+        // Header Value
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0;
+        form.add(new JLabel("Header Value:"), gbc);
+
+        gbc.gridx = 1; gbc.gridy = 2; gbc.weightx = 1.0;
+        JTextField valueField = new JTextField(initialValue != null ? initialValue : "", 26);
+        valueField.setToolTipText("Enter header value. E.g. Bearer {{authToken}} or application/json");
+        form.add(valueField, gbc);
+
+        // Quick Token Insertion (if token variables exist in the suite)
+        List<String> tokens = getAvailableTokenNames();
+        if (!tokens.isEmpty()) {
+            gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0;
+            form.add(new JLabel("Token Helper:"), gbc);
+
+            gbc.gridx = 1; gbc.gridy = 3; gbc.weightx = 1.0;
+            JPanel tokenPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+            JComboBox<String> tokenCombo = new JComboBox<>(tokens.toArray(new String[0]));
+            JButton insertBearerBtn = new JButton("Use as Bearer Token");
+            insertBearerBtn.setToolTipText("Sets Header Name to 'Authorization' and Value to 'Bearer {{" + tokenCombo.getSelectedItem() + "}}'");
+            insertBearerBtn.addActionListener(e -> {
+                nameCombo.setSelectedItem("Authorization");
+                valueField.setText("Bearer {{" + tokenCombo.getSelectedItem() + "}}");
+            });
+            tokenPanel.add(new JLabel("Token:"));
+            tokenPanel.add(tokenCombo);
+            tokenPanel.add(insertBearerBtn);
+            form.add(tokenPanel, gbc);
+        }
+
+        // Auto-suggest value when standard header name is chosen and value is empty
+        nameCombo.addActionListener(e -> {
+            String selected = (String) nameCombo.getSelectedItem();
+            if (valueField.getText().trim().isEmpty() && selected != null) {
+                if ("Content-Type".equalsIgnoreCase(selected) || "Accept".equalsIgnoreCase(selected)) {
+                    valueField.setText("application/json");
+                } else if ("Authorization".equalsIgnoreCase(selected) && !tokens.isEmpty()) {
+                    valueField.setText("Bearer {{" + tokens.get(0) + "}}");
+                }
+            }
+        });
+
+        int option = JOptionPane.showConfirmDialog(
+                this,
+                form,
+                isEdit ? "Edit Request Header" : "Add Request Header",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE
+        );
+
+        if (option == JOptionPane.OK_OPTION) {
+            String name = (String) nameCombo.getSelectedItem();
+            if (name == null || name.trim().isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Header Name cannot be empty.", "Validation Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            String value = valueField.getText().trim();
+            if (isEdit) {
+                headersTableModel.setValueAt(name.trim(), rowIndex, 0);
+                headersTableModel.setValueAt(value, rowIndex, 1);
+            } else {
+                headersTableModel.addRow(new Object[]{name.trim(), value});
+                int newRow = headersTableModel.getRowCount() - 1;
+                headersTable.setRowSelectionInterval(newRow, newRow);
+                headersTable.scrollRectToVisible(headersTable.getCellRect(newRow, 0, true));
+            }
+        }
     }
 
     private JPanel createAuthTab() {
@@ -410,15 +561,23 @@ public class TestCaseEditDialog extends JDialog {
         return panel;
     }
 
-    private void populateAvailableTokens() {
-        availableTokensCombo.removeAllItems();
-        availableTokensCombo.addItem("-- None --");
+    private List<String> getAvailableTokenNames() {
+        List<String> list = new ArrayList<>();
         if (suite != null && suite.getTestCases() != null) {
             for (TestCase tc : suite.getTestCases()) {
                 if (tc.isTokenProvider() && tc.getTokenVariableName() != null && !tc.getTokenVariableName().isBlank()) {
-                    availableTokensCombo.addItem(tc.getTokenVariableName().trim());
+                    list.add(tc.getTokenVariableName().trim());
                 }
             }
+        }
+        return list;
+    }
+
+    private void populateAvailableTokens() {
+        availableTokensCombo.removeAllItems();
+        availableTokensCombo.addItem("-- None --");
+        for (String t : getAvailableTokenNames()) {
+            availableTokensCombo.addItem(t);
         }
     }
 

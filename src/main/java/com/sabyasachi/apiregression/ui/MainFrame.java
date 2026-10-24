@@ -9,6 +9,7 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -254,12 +255,17 @@ public class MainFrame extends JFrame {
 
     private void attachProviderSpec() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Select OpenAPI 3.x / Swagger 2.0 Spec");
-        chooser.setFileFilter(new FileNameExtensionFilter("OpenAPI / Swagger Spec (*.json, *.yaml, *.yml)", "json", "yaml", "yml"));
+        chooser.setDialogTitle("Select Provider Specification (JSON, YAML, or Excel .xlsx)");
+        chooser.setFileFilter(new FileNameExtensionFilter("Specification Files (*.json, *.yaml, *.yml, *.xlsx)", "json", "yaml", "yml", "xlsx"));
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             File file = chooser.getSelectedFile();
             try {
-                io.swagger.v3.oas.models.OpenAPI spec = com.sabyasachi.apiregression.spec.ProviderSpecLoader.loadOpenAPI(file.toPath());
+                com.sabyasachi.apiregression.spec.ProviderSpecLoader.LoadedSpec loaded = com.sabyasachi.apiregression.spec.ProviderSpecLoader.load(file.toPath());
+                io.swagger.v3.oas.models.OpenAPI spec = loaded.getOpenAPI();
+                if (spec == null) {
+                    String err = loaded.getMessages().isEmpty() ? "Blocked by security rules" : String.join("; ", loaded.getMessages());
+                    throw new IOException("Failed to load specification: " + err);
+                }
                 currentSuite.setSpecPath(file.getAbsolutePath());
                 int opCount = 0;
                 if (spec.getPaths() != null) {
@@ -267,12 +273,15 @@ public class MainFrame extends JFrame {
                         opCount += item.readOperations().size();
                     }
                 }
-                JOptionPane.showMessageDialog(this,
-                        "Successfully attached specification!\n" +
+                String msg = "Successfully attached specification!\n" +
                         "File: " + file.getName() + "\n" +
-                        "Version: " + (spec.getOpenapi() != null ? spec.getOpenapi() : "2.0") + "\n" +
-                        "Operations: " + opCount,
-                        "Spec Attached", JOptionPane.INFORMATION_MESSAGE);
+                        "Version: " + (loaded.getSpecVersion() != null ? loaded.getSpecVersion() : "unknown") + "\n" +
+                        "Operations: " + opCount;
+                if (!loaded.getMessages().isEmpty()) {
+                    msg += "\nWarnings (" + loaded.getMessages().size() + "):\n- "
+                            + String.join("\n- ", loaded.getMessages().stream().limit(5).toList());
+                }
+                JOptionPane.showMessageDialog(this, msg, "Spec Attached", JOptionPane.INFORMATION_MESSAGE);
                 updateTitle();
             } catch (Exception ex) {
                 JOptionPane.showMessageDialog(this,

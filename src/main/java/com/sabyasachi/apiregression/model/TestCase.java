@@ -32,6 +32,12 @@ public class TestCase {
     private RequestSnapshot baseline;
     private OverrideProvenance lastOverride;
 
+    // --- Data-driven runs support ---
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private boolean template = false;
+    private String derivedFrom;
+    private String runLabel;
+
     public TestCase() {
     }
 
@@ -185,6 +191,30 @@ public class TestCase {
         this.lastOverride = lastOverride;
     }
 
+    public boolean isTemplate() {
+        return template;
+    }
+
+    public void setTemplate(boolean template) {
+        this.template = template;
+    }
+
+    public String getDerivedFrom() {
+        return derivedFrom;
+    }
+
+    public void setDerivedFrom(String derivedFrom) {
+        this.derivedFrom = derivedFrom;
+    }
+
+    public String getRunLabel() {
+        return runLabel;
+    }
+
+    public void setRunLabel(String runLabel) {
+        this.runLabel = runLabel;
+    }
+
     public void revertToBaseline() {
         if (baseline != null) {
             this.url = baseline.getUrl();
@@ -205,6 +235,7 @@ public class TestCase {
         if (!(o instanceof TestCase testCase)) return false;
         return expectedStatus == testCase.expectedStatus &&
                 tokenProvider == testCase.tokenProvider &&
+                template == testCase.template &&
                 Objects.equals(name, testCase.name) &&
                 Objects.equals(method, testCase.method) &&
                 Objects.equals(url, testCase.url) &&
@@ -217,14 +248,16 @@ public class TestCase {
                 Objects.equals(tokenJsonPath, testCase.tokenJsonPath) &&
                 Objects.equals(tokenHeaderSource, testCase.tokenHeaderSource) &&
                 Objects.equals(tokenVariableName, testCase.tokenVariableName) &&
-                Objects.equals(usesTokenFrom, testCase.usesTokenFrom);
+                Objects.equals(usesTokenFrom, testCase.usesTokenFrom) &&
+                Objects.equals(derivedFrom, testCase.derivedFrom) &&
+                Objects.equals(runLabel, testCase.runLabel);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(name, method, url, headers, auth, bodyTemplate, expectedStatus,
                 expectedBodyTemplate, ignorePaths, category, tokenProvider, tokenJsonPath,
-                tokenHeaderSource, tokenVariableName, usesTokenFrom);
+                tokenHeaderSource, tokenVariableName, usesTokenFrom, template, derivedFrom, runLabel);
     }
 
     @Override

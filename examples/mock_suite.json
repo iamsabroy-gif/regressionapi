@@ -1,0 +1,41 @@
+{
+  "name": "Mock Customer API Regression",
+  "baseUrl": "http://127.0.0.1:8089",
+  "specPath": "mock_openapi.json",
+  "testCases": [
+    {
+      "name": "Generate Access Token",
+      "category": "Authentication",
+      "method": "POST",
+      "url": "{{baseUrl}}/generateAccessToken",
+      "headers": { "Content-Type": "application/json" },
+      "bodyTemplate": "{}",
+      "expectedStatus": 200,
+      "tokenProvider": true,
+      "tokenJsonPath": "$.access_token",
+      "tokenVariableName": "accessToken"
+    },
+    {
+      "name": "Valid Customer",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": { "Content-Type": "application/json", "Authorization": "Bearer {{accessToken}}" },
+      "bodyTemplate": "{\n  \"SessionContext\": { \"BankCode\": \"abcd\", \"refid\": \"qweijqijejeqoejqoej3221asdadad\", \"userid\": \"tjon\" },\n  \"CustId\": \"123456\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"654321\",\n  \"AccountNum\": \"87654321\",\n  \"Email\": \"cust654321@example.com\",\n  \"Mobile\": \"9000654321\"\n}",
+      "usesTokenFrom": ["accessToken"]
+    },
+    {
+      "name": "Bad CustId",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": { "Content-Type": "application/json", "Authorization": "Bearer {{accessToken}}" },
+      "bodyTemplate": "{\n  \"SessionContext\": { \"BankCode\": \"abcd\", \"refid\": \"qweijqijejeqoejqoej3221asdadad\", \"userid\": \"tjon\" },\n  \"CustId\": \"123456\",\n  \"accountNum\": \"12345678\"\n}",
+      "expectedStatus": 400,
+      "expectedBodyTemplate": "{\n  \"error\": \"INVALID_CUSTID\",\n  \"message\": \"CustId must be exactly 6 digits\"\n}",
+      "usesTokenFrom": ["accessToken"]
+    }
+  ]
+}

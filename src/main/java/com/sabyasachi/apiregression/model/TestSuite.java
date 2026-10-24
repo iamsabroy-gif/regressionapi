@@ -70,7 +70,7 @@ public class TestSuite {
     }
 
     public void setTestCases(List<TestCase> testCases) {
-        this.testCases = testCases != null ? testCases : new ArrayList<>();
+        this.testCases = testCases != null ? new ArrayList<>(testCases) : new ArrayList<>();
     }
 
     public void addTestCase(TestCase testCase) {

@@ -70,6 +70,7 @@ public class SuiteEditorPanel extends JPanel {
         varsPanel.setBorder(BorderFactory.createTitledBorder("Shared Suite Variables ({{variable}} syntax)"));
         varsTableModel = new DefaultTableModel(new String[]{"Variable Name", "Value"}, 0);
         varsTable = new JTable(varsTableModel);
+        varsTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         varsTable.setPreferredScrollableViewportSize(new Dimension(500, 70));
         varsPanel.add(new JScrollPane(varsTable), BorderLayout.CENTER);
 
@@ -210,10 +211,11 @@ public class SuiteEditorPanel extends JPanel {
                 tokenRole = "USES: " + String.join(", ", tc.getUsesTokenFrom());
             }
 
+            String displayName = (tc.isTemplate() ? "[template] " : "") + (tc.getName() != null ? tc.getName() : "");
             testCasesTableModel.addRow(new Object[]{
                     index++,
                     tc.getMethod(),
-                    tc.getName(),
+                    displayName,
                     tc.getCategory() != null ? tc.getCategory() : "",
                     tc.getUrl(),
                     tokenRole,

@@ -136,19 +136,29 @@ public class ParameterOverrideService {
 
         // 2. Parse Excel Workbook
         List<SheetParams> parsedSheets = excelImporter.parse(xlsxPath, options.isSkipHiddenSheets(), options.getMaxRowsPerSheet());
-        // Identity-based conflict set (D2)
-        Set<TestCase> targetedInThisWorkbook = Collections.newSetFromMap(new IdentityHashMap<>());
+        Map<TestCase, String> matchedCaseToSheet = new IdentityHashMap<>();
+        Map<String, TargetMatcher.MatchResult> sheetMatchCache = new HashMap<>();
+        Set<String> templatesCleaned = new HashSet<>();
+        Map<TestCase, TestCase> lastInsertedForTemplate = new IdentityHashMap<>();
+        Set<String> createdCaseNames = new HashSet<>();
+        for (TestCase tc : suite.getTestCases()) {
+            if (tc.getName() != null) {
+                createdCaseNames.add(tc.getName().toLowerCase(Locale.ROOT));
+            }
+        }
         TypeCoercer coercer = new TypeCoercer(templateCodec.getMapper());
 
         for (SheetParams sheet : parsedSheets) {
-            SheetSummary summary = new SheetSummary(sheet.getSheetName(), sheet.getTarget());
+            boolean isDataDriven = sheet.getRunIndex() != null;
+            String summarySheetName = isDataDriven ? sheet.getSheetName() + " [" + sheet.getRunLabel() + "]" : sheet.getSheetName();
+            SheetSummary summary = new SheetSummary(summarySheetName, sheet.getTarget());
             report.getSheets().add(summary);
 
             // Handle sheet-level skipped (e.g. HIDDEN_SHEET)
             if ("SKIPPED".equalsIgnoreCase(sheet.getStatus())) {
                 summary.setStatus("SKIPPED");
                 OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
+                entry.setSheet(summarySheetName);
                 entry.setRow(1);
                 entry.setParameter("sheet");
                 entry.setAction(OverrideAction.SKIPPED);
@@ -167,7 +177,7 @@ public class ParameterOverrideService {
                 summary.setStatus("NOT_APPLIED");
                 summary.setErrors(1);
                 OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
+                entry.setSheet(summarySheetName);
                 entry.setRow(1);
                 entry.setParameter("sheet");
                 entry.setAction(OverrideAction.ERROR);
@@ -189,7 +199,7 @@ public class ParameterOverrideService {
                     summary.setStatus("NOT_APPLIED");
                     summary.setErrors(1);
                     OverrideEntry entry = new OverrideEntry();
-                    entry.setSheet(sheet.getSheetName());
+                    entry.setSheet(summarySheetName);
                     entry.setRow(1);
                     entry.setParameter("sheet");
                     entry.setAction(OverrideAction.ERROR);
@@ -202,13 +212,17 @@ public class ParameterOverrideService {
                 continue;
             }
 
-            // Match TestCase using TargetMatcher (D7, M1)
-            TargetMatcher.MatchResult matchResult = TargetMatcher.match(suite, sheet.getTarget(), specIndex);
+            // Match TestCase using TargetMatcher (cached per sheet name)
+            TargetMatcher.MatchResult matchResult = sheetMatchCache.get(sheet.getSheetName());
+            if (matchResult == null) {
+                matchResult = TargetMatcher.match(suite, sheet.getTarget(), specIndex);
+                sheetMatchCache.put(sheet.getSheetName(), matchResult);
+            }
             if (matchResult.getMatchCount() == 0) {
                 summary.setStatus("UNMATCHED");
                 summary.setErrors(1);
                 OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
+                entry.setSheet(summarySheetName);
                 entry.setRow(1);
                 entry.setParameter("target");
                 entry.setAction(OverrideAction.ERROR);
@@ -220,7 +234,7 @@ public class ParameterOverrideService {
                 summary.setStatus("AMBIGUOUS_TARGET");
                 summary.setErrors(1);
                 OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
+                entry.setSheet(summarySheetName);
                 entry.setRow(1);
                 entry.setParameter("target");
                 entry.setAction(OverrideAction.ERROR);
@@ -231,42 +245,97 @@ public class ParameterOverrideService {
                 continue;
             }
 
-            TestCase targetTc = matchResult.getTestCase();
-            summary.setTargetTestCase(targetTc.getName());
+            TestCase templateTc = matchResult.getTestCase();
             summary.setMatchedBy(matchResult.getMatchedBy());
 
-            // Check if manual edits occurred since last import
-            if (targetTc.getLastOverride() != null && targetTc.getLastOverride().getProducedFingerprint() != null) {
-                String currentFp = computeRequestFingerprint(targetTc.getUrl(), targetTc.getHeaders(), targetTc.getBodyTemplate());
-                if (!currentFp.equals(targetTc.getLastOverride().getProducedFingerprint())) {
-                    summary.addSheetWarning("MANUAL_EDITS_DISCARDED: manual edits since last import will be discarded.");
-                }
-            }
-
-            // Check duplicate sheet targeting same TestCase (D2)
-            if (targetedInThisWorkbook.contains(targetTc)) {
+            // Check duplicate sheet targeting same TestCase
+            String priorSheet = matchedCaseToSheet.get(templateTc);
+            if (priorSheet != null && !priorSheet.equalsIgnoreCase(sheet.getSheetName())) {
                 summary.setStatus("CONFLICT");
                 summary.setErrors(1);
                 OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
+                entry.setSheet(summarySheetName);
                 entry.setRow(1);
                 entry.setParameter("target");
                 entry.setAction(OverrideAction.ERROR);
                 entry.setReasonCode(ReasonCode.CONFLICT);
-                entry.setReason("Another sheet in this workbook already targets TestCase: '" + targetTc.getName() + "'");
+                entry.setReason("Another sheet in this workbook already targets TestCase: '" + templateTc.getName() + "'");
                 report.getEntries().add(entry);
                 continue;
             }
-            targetedInThisWorkbook.add(targetTc);
+            matchedCaseToSheet.put(templateTc, sheet.getSheetName());
+
+            // Clean up existing derived cases on first run of template
+            if (!isDryRun && isDataDriven && templatesCleaned.add(templateTc.getName())) {
+                Iterator<TestCase> iter = suite.getTestCases().iterator();
+                while (iter.hasNext()) {
+                    TestCase existing = iter.next();
+                    if (templateTc.getName().equals(existing.getDerivedFrom())) {
+                        iter.remove();
+                        if (existing.getName() != null) {
+                            createdCaseNames.remove(existing.getName().toLowerCase(Locale.ROOT));
+                        }
+                    }
+                }
+                templateTc.setTemplate(true);
+            }
+
+            // Check if manual edits occurred since last import
+            if (templateTc.getLastOverride() != null && templateTc.getLastOverride().getProducedFingerprint() != null) {
+                if (!isDataDriven || sheet.getRunIndex() == null || sheet.getRunIndex() == 1) {
+                    String currentFp = computeRequestFingerprint(templateTc.getUrl(), templateTc.getHeaders(), templateTc.getBodyTemplate());
+                    if (!currentFp.equals(templateTc.getLastOverride().getProducedFingerprint())) {
+                        summary.addSheetWarning("MANUAL_EDITS_DISCARDED: manual edits since last import will be discarded.");
+                    }
+                }
+            }
 
             // Idempotency: Always start from baseline!
-            if (!isDryRun && targetTc.getBaseline() == null) {
-                targetTc.promoteToBaseline();
+            if (!isDryRun && templateTc.getBaseline() == null) {
+                templateTc.promoteToBaseline();
             }
-            RequestSnapshot baseline = targetTc.getBaseline();
+            RequestSnapshot baseline = templateTc.getBaseline();
             if (baseline == null) {
-                baseline = RequestSnapshot.from(targetTc);
+                baseline = RequestSnapshot.from(templateTc);
             }
+
+            TestCase targetTc;
+            if (isDataDriven) {
+                TestCase derived = new TestCase();
+                derived.setMethod(templateTc.getMethod());
+                derived.setUrl(baseline.getUrl());
+                derived.setHeaders(new LinkedHashMap<>(baseline.getHeaders()));
+                derived.setBodyTemplate(baseline.getBodyTemplate());
+                derived.setAuth(templateTc.getAuth());
+                derived.setExpectedStatus(sheet.getRunExpectedStatus() != null ? sheet.getRunExpectedStatus() : templateTc.getExpectedStatus());
+                derived.setExpectedBodyTemplate(templateTc.getExpectedBodyTemplate());
+                derived.setIgnorePaths(new ArrayList<>(templateTc.getIgnorePaths()));
+                derived.setCategory(templateTc.getCategory());
+                derived.setOperationId(templateTc.getOperationId());
+                derived.setTokenProvider(templateTc.isTokenProvider());
+                derived.setTokenJsonPath(templateTc.getTokenJsonPath());
+                derived.setTokenHeaderSource(templateTc.getTokenHeaderSource());
+                derived.setTokenVariableName(templateTc.getTokenVariableName());
+                derived.setUsesTokenFrom(new ArrayList<>(templateTc.getUsesTokenFrom()));
+                derived.setTemplate(false);
+                derived.setDerivedFrom(templateTc.getName());
+                derived.setRunLabel(sheet.getRunLabel());
+
+                String baseName = templateTc.getName() + " [" + sheet.getRunLabel() + "]";
+                String derivedName = baseName;
+                int counter = 2;
+                while (createdCaseNames.contains(derivedName.toLowerCase(Locale.ROOT))) {
+                    derivedName = baseName + " #" + counter++;
+                }
+                createdCaseNames.add(derivedName.toLowerCase(Locale.ROOT));
+                derived.setName(derivedName);
+
+                targetTc = derived;
+            } else {
+                targetTc = templateTc;
+            }
+
+            summary.setTargetTestCase(targetTc.getName());
 
             // D1 WorkingRequest
             String workingUrl = baseline.getUrl();
@@ -298,7 +367,7 @@ public class ParameterOverrideService {
             // Process each row
             for (ParamRow row : sheet.getRows()) {
                 OverrideEntry entry = new OverrideEntry();
-                entry.setSheet(sheet.getSheetName());
+                entry.setSheet(summarySheetName);
                 entry.setRow(row.getRow());
                 entry.setParameter(row.getParameter());
                 entry.setRawValue(row.getRawValue());
@@ -458,7 +527,9 @@ public class ParameterOverrideService {
             }
 
             // Summary status
-            if (summary.getErrors() > 0) {
+            if (summary.getErrors() > 0 && (!options.isApplyWithErrors() || (summary.getModified() == 0 && summary.getAdded() == 0))) {
+                summary.setStatus("ERROR");
+            } else if (summary.getErrors() > 0) {
                 summary.setStatus("PARTIAL");
             } else {
                 summary.setStatus("APPLIED");
@@ -493,6 +564,20 @@ public class ParameterOverrideService {
                     String producedFp = computeRequestFingerprint(workingUrl, workingHeaders, finalBody);
                     prov.setProducedFingerprint(producedFp);
                     targetTc.setLastOverride(prov);
+
+                    if (isDataDriven) {
+                        TestCase anchor = lastInsertedForTemplate.get(templateTc);
+                        if (anchor == null) {
+                            anchor = templateTc;
+                        }
+                        int anchorIdx = suite.getTestCases().indexOf(anchor);
+                        if (anchorIdx != -1) {
+                            suite.getTestCases().add(anchorIdx + 1, targetTc);
+                        } else {
+                            suite.getTestCases().add(targetTc);
+                        }
+                        lastInsertedForTemplate.put(templateTc, targetTc);
+                    }
                 } catch (Exception ex) {
                     log.error("Failed to commit WorkingRequest to TestCase", ex);
                     summary.setStatus("ERROR");

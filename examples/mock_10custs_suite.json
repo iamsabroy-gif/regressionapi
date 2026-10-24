@@ -1,0 +1,181 @@
+{
+  "name": "Mock 10 CustIds",
+  "baseUrl": "http://127.0.0.1:8089",
+  "specPath": "mock_openapi.json",
+  "testCases": [
+    {
+      "name": "Generate Access Token",
+      "category": "Authentication",
+      "method": "POST",
+      "url": "{{baseUrl}}/generateAccessToken",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "bodyTemplate": "{}",
+      "expectedStatus": 200,
+      "tokenProvider": true,
+      "tokenJsonPath": "$.access_token",
+      "tokenVariableName": "accessToken"
+    },
+    {
+      "name": "Cust 100001",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100001\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100001@example.com\",\n  \"Mobile\": \"9000100001\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100002",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100002\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100002@example.com\",\n  \"Mobile\": \"9000100002\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100003",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100003\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100003@example.com\",\n  \"Mobile\": \"9000100003\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100004",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100004\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100004@example.com\",\n  \"Mobile\": \"9000100004\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100005",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100005\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100005@example.com\",\n  \"Mobile\": \"9000100005\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100006",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100006\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100006@example.com\",\n  \"Mobile\": \"9000100006\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100007",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100007\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100007@example.com\",\n  \"Mobile\": \"9000100007\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100008",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100008\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100008@example.com\",\n  \"Mobile\": \"9000100008\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100009",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100009\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100009@example.com\",\n  \"Mobile\": \"9000100009\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    },
+    {
+      "name": "Cust 100010",
+      "category": "Customer",
+      "method": "POST",
+      "url": "{{baseUrl}}/getCustDetails",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{accessToken}}"
+      },
+      "bodyTemplate": "{\n  \"SessionContext\": {\n    \"BankCode\": \"abcd\",\n    \"refid\": \"ref-1\",\n    \"userid\": \"tjon\"\n  },\n  \"CustId\": \"000000\"\n}",
+      "expectedStatus": 200,
+      "expectedBodyTemplate": "{\n  \"CustId\": \"100010\",\n  \"AccountNum\": null,\n  \"Email\": \"cust100010@example.com\",\n  \"Mobile\": \"9000100010\"\n}",
+      "usesTokenFrom": [
+        "accessToken"
+      ]
+    }
+  ]
+}

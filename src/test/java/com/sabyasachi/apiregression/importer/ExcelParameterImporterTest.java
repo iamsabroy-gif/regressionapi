@@ -358,4 +358,20 @@ class ExcelParameterImporterTest {
         Files.delete(p);
         assertFalse(Files.exists(p));
     }
+
+    @Test
+    void specWorkbook_givenToOverrideImporter_failsClearly(@TempDir Path tempDir) throws Exception {
+        Path p = tempDir.resolve("spec_as_override.xlsx");
+        com.sabyasachi.apiregression.testsupport.SpecXlsxBuilder.create()
+                .sheet("getCustDetails")
+                .operation("POST /getCustDetails")
+                .header("Field", "Example", "Type", "Required", "Pattern")
+                .row(0, "CustId", "123456", "string", "Y", null)
+                .build(p);
+
+        OverrideException ex = assertThrows(OverrideException.class, () -> ExcelParameterImporter.load(p));
+        assertEquals(ReasonCode.WORKBOOK_UNSUPPORTED, ex.getReasonCode());
+        assertTrue(ex.getMessage().contains("Invalid column header"));
+    }
 }
+

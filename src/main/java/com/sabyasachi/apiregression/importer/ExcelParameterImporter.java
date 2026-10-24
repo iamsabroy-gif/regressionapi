@@ -126,8 +126,19 @@ public class ExcelParameterImporter {
                 }
 
                 Sheet sheet = workbook.getSheetAt(i);
-                parseSheet(sheet, sheetParams, maxRowsPerSheet);
-                results.add(sheetParams);
+                List<SheetParams> parsedList = parseSheet(sheet, sheetParams, maxRowsPerSheet);
+                results.addAll(parsedList);
+            }
+
+            int totalRuns = 0;
+            for (SheetParams sp : results) {
+                if (sp.getRunIndex() != null) {
+                    totalRuns++;
+                    if (totalRuns > 20000) {
+                        throw new OverrideException(ReasonCode.ROW_CAP_EXCEEDED,
+                                "Workbook exceeds maximum allowed run limit of 20,000 runs.");
+                    }
+                }
             }
         } catch (EncryptedDocumentException e) {
             throw new OverrideException(ReasonCode.WORKBOOK_ENCRYPTED,
@@ -147,13 +158,13 @@ public class ExcelParameterImporter {
         return results;
     }
 
-    private void parseSheet(Sheet sheet, SheetParams sheetParams, int maxRowsPerSheet) {
+    private List<SheetParams> parseSheet(Sheet sheet, SheetParams sheetParams, int maxRowsPerSheet) {
         int firstRowNum = sheet.getFirstRowNum();
         int lastRowNum = sheet.getLastRowNum();
 
         if (firstRowNum < 0 || lastRowNum < 0 || lastRowNum < firstRowNum) {
             sheetParams.setTarget(sheet.getSheetName());
-            return;
+            return List.of(sheetParams);
         }
 
         List<CellRangeAddress> mergedRegions = sheet.getMergedRegions();
@@ -213,8 +224,7 @@ public class ExcelParameterImporter {
         }
 
         if (headerRowNum == -1) {
-            sheetParams.addSheetWarning("Header row with 'parameter' column was not found in sheet.");
-            return;
+            return DataSheetPivot.parseDataDrivenSheet(sheet, sheetParams, mergedRegions, this);
         }
 
         int paramCol = colMap.getOrDefault("parameter", -1);
@@ -226,7 +236,7 @@ public class ExcelParameterImporter {
 
         if (paramCol == -1 || valueCol == -1) {
             sheetParams.addSheetWarning("Required 'parameter' and/or 'value' columns were missing.");
-            return;
+            return List.of(sheetParams);
         }
 
         // Count data rows for row cap
@@ -246,7 +256,7 @@ public class ExcelParameterImporter {
             sheetParams.setSkipReason(ReasonCode.ROW_CAP_EXCEEDED.name());
             sheetParams.getRows().clear();
             sheetParams.addSheetWarning("ROW_CAP_EXCEEDED: Sheet exceeds maximum allowed row limit of " + maxRowsPerSheet + " rows (" + dataRowCount + " rows found). Zero rows processed.");
-            return;
+            return List.of(sheetParams);
         }
 
         List<ParamRow> rawRows = new ArrayList<>();
@@ -328,9 +338,10 @@ public class ExcelParameterImporter {
             seen.put(normKey, pr);
         }
         sheetParams.getRows().addAll(rawRows);
+        return List.of(sheetParams);
     }
 
-    private void extractCellValue(Cell cell, ParamRow paramRow) {
+    void extractCellValue(Cell cell, ParamRow paramRow) {
         if (cell == null) {
             paramRow.setRawValue(null);
             paramRow.setCellKindEnum(ParamRow.CellKind.BLANK);
@@ -421,7 +432,7 @@ public class ExcelParameterImporter {
         }
     }
 
-    private boolean isNonTopLeftMerged(Cell cell, List<CellRangeAddress> mergedRegions) {
+    boolean isNonTopLeftMerged(Cell cell, List<CellRangeAddress> mergedRegions) {
         if (mergedRegions == null || mergedRegions.isEmpty()) return false;
         int r = cell.getRowIndex();
         int c = cell.getColumnIndex();
@@ -477,7 +488,7 @@ public class ExcelParameterImporter {
         }
     }
 
-    private String getCellStringValue(Cell cell) {
+    String getCellStringValue(Cell cell) {
         if (cell == null) return null;
         CellType type = cell.getCellType();
         if (type == CellType.FORMULA) {

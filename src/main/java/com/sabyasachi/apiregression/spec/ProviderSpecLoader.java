@@ -1,5 +1,7 @@
 package com.sabyasachi.apiregression.spec;
 
+import com.sabyasachi.apiregression.payload.OverrideException;
+import com.sabyasachi.apiregression.payload.ReasonCode;
 import io.swagger.parser.OpenAPIParser;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.parser.core.models.ParseOptions;
@@ -117,6 +119,26 @@ public class ProviderSpecLoader {
 
         byte[] bytes = Files.readAllBytes(path);
         String sha256 = computeSha256(bytes);
+
+        // Check for Excel (.xlsx) provider specification (Section 3.1)
+        if (path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
+            LoadedSpec loaded = ExcelSpecLoader.load(path, bytes, sha256);
+            Map<Path, Long> fileModifiedTimes = new LinkedHashMap<>();
+            try {
+                fileModifiedTimes.put(path.toRealPath(), Files.getLastModifiedTime(path).toMillis());
+            } catch (IOException e) {
+                fileModifiedTimes.put(path.toAbsolutePath().normalize(), Files.getLastModifiedTime(path).toMillis());
+            }
+            SPEC_CACHE.put(absKey, new CacheEntry(fileModifiedTimes, Set.of(), loaded));
+            return loaded;
+        }
+
+        // Hostile check: a .json/.yaml/.yml starting with PK archive bytes
+        if (bytes.length >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4B && bytes[2] == 0x03 && bytes[3] == 0x04) {
+            String msg = "SPEC_PARSE_FAILED: File extension does not match content: archive file found with non-zip extension: " + path.getFileName();
+            LoadedSpec loaded = new LoadedSpec(null, path.toAbsolutePath().normalize().toString(), sha256, null, List.of(msg));
+            return loaded;
+        }
 
         // Pre-scan with RefGuard to enforce $ref allowlist (D4 / S1)
         RefGuard.GuardResult guardResult = RefGuard.scan(path);
