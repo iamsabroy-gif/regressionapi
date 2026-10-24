@@ -5,3 +5,5 @@ api-regression/target/
 .DS_Store
 .idea/
 *.iml
+~$*
+
