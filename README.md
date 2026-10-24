@@ -207,3 +207,4 @@ The application incorporates multi-layer security protections across spec loadin
   - [x] The shaded fat JAR parses Swagger 2.0 via `--check-spec` using ServiceLoader SPI discovery and reads Excel parameter workbooks without logging warnings or Log4j noise.
 - [x] Automated test suite: **189/189 tests passing** with 100% pass rate across unit, integration, security, and full traceability matrix (H1–H6, M1–M11, Low1–Low2, S1–S6).
 
+# regressionapi
